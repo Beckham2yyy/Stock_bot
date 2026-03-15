@@ -1,5 +1,5 @@
 import asyncio
-import aiohttp
+import httpx
 import sqlite3
 import time
 import traceback
@@ -120,13 +120,12 @@ async def load_stock_list():
 
     for attempt in range(3):
         try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with httpx.AsyncClient(timeout=10) as session:
                 url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        raise Exception(f"Status {resp.status}")
-                    data = await resp.json()
+                resp = await session.get(url)
+                if resp.status_code != 200:
+                    raise Exception(f"Status {resp.status_code}")
+                data = resp.json()
 
             STOCKS = [item["symbol"] for item in data if item["symbol"].isalpha()][:MAX_STOCKS]
 
@@ -151,16 +150,16 @@ async def get_stock_data(session, symbol):
     for attempt in range(3):
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise Exception(f"Status {resp.status}")
-                data = await resp.json()
-                price = data.get("c")
+            resp = await session.get(url)
+            if resp.status_code != 200:
+                raise Exception(f"Status {resp.status_code}")
+            data = resp.json()
+            price = data.get("c")
 
-                if price is None or price == 0:
-                    return None
+            if price is None or price == 0:
+                return None
 
-                return price
+            return price
         except:
             await asyncio.sleep(2 ** attempt)
     return None
@@ -183,11 +182,11 @@ async def get_stock_volume(session, symbol):
 
     try:
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
-        async with session.get(url) as resp:
-            data = await resp.json()
-            volume = data.get("Global Quote", {}).get("06. volume")
-            if volume:
-                return int(volume)
+        resp = await session.get(url)
+        data = resp.json()
+        volume = data.get("Global Quote", {}).get("06. volume")
+        if volume:
+            return int(volume)
     except:
         pass
 
@@ -205,20 +204,20 @@ async def get_commodity_data(session, symbols_batch):
             url = f"https://api.commoditypriceapi.com/v2/rates/latest?symbols={symbols_str}"
             headers = {"x-api-key": COMMODITY_API_KEY}
 
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    raise Exception(f"Status {resp.status}")
+            resp = await session.get(url, headers=headers)
+            if resp.status_code != 200:
+                raise Exception(f"Status {resp.status_code}")
 
-                data = await resp.json()
-                rates = data.get("rates", {})
-                result = {}
+            data = resp.json()
+            rates = data.get("rates", {})
+            result = {}
 
-                for sym in symbols_batch:
-                    price = rates.get(sym)
-                    if price is not None:
-                        result[sym] = float(price)
+            for sym in symbols_batch:
+                price = rates.get(sym)
+                if price is not None:
+                    result[sym] = float(price)
 
-                return result
+            return result
         except:
             await asyncio.sleep(2 ** attempt)
 
@@ -358,9 +357,7 @@ async def main():
 
     await load_stock_list()
 
-    timeout = aiohttp.ClientTimeout(total=10)
-
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with httpx.AsyncClient(timeout=10) as session:
 
         startup_msg = (
             f"Market scanner started\n"
