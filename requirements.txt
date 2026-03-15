@@ -1,1 +1,1 @@
-httpx==0.25.0
+# Use Python 3.14

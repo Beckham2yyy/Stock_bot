@@ -1,11 +1,11 @@
-import asyncio
-import httpx
 import sqlite3
 import time
 import traceback
 import os
 import json
 import math
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 # =========================
 # CONFIG
@@ -29,9 +29,9 @@ MAX_STOCKS = 300
 BATCH_SIZE = 30
 
 COMMODITIES = [
-"XAU",
-"XAG",
-"WTIOIL-FUT"
+    "XAU",
+    "XAG",
+    "WTIOIL-FUT"
 ]
 
 STOCKS = []
@@ -81,24 +81,21 @@ def save_alerts_state():
 # TELEGRAM
 # =========================
 
-async def send_telegram(session, message):
-    try:
-        for chat_id in TELEGRAM_CHAT_IDS:
+def send_telegram(message):
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message
-            }
-            await session.post(url, json=payload)
-    except Exception as e:
-        print("Telegram error:", e)
+            payload = json.dumps({"chat_id": chat_id, "text": message}).encode("utf-8")
+            req = Request(url, data=payload, headers={"Content-Type": "application/json"})
+            urlopen(req, timeout=10)
+        except Exception as e:
+            print("Telegram error:", e)
 
 # =========================
 # LOAD STOCK LIST WITH CACHE
 # =========================
 
-async def load_stock_list():
-
+def load_stock_list():
     global STOCKS
     cache_file = "stocks_cache.json"
 
@@ -120,13 +117,9 @@ async def load_stock_list():
 
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=10) as session:
-                url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"
-                resp = await session.get(url)
-                if resp.status_code != 200:
-                    raise Exception(f"Status {resp.status_code}")
-                data = resp.json()
-
+            url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"
+            resp = urlopen(url, timeout=10)
+            data = json.load(resp)
             STOCKS = [item["symbol"] for item in data if item["symbol"].isalpha()][:MAX_STOCKS]
 
             with open(cache_file, "w") as f:
@@ -134,10 +127,9 @@ async def load_stock_list():
 
             print("Loaded", len(STOCKS), "stocks")
             return
-
         except Exception as e:
             print(f"Attempt {attempt+1} failed to load stock list: {e}")
-            await asyncio.sleep(2 ** attempt)
+            time.sleep(2 ** attempt)
 
     print("Failed to load stock list after 3 attempts, using fallback")
     STOCKS = fallback_stocks
@@ -146,22 +138,18 @@ async def load_stock_list():
 # FETCH STOCK PRICE (FAST)
 # =========================
 
-async def get_stock_data(session, symbol):
+def get_stock_data(symbol):
     for attempt in range(3):
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-            resp = await session.get(url)
-            if resp.status_code != 200:
-                raise Exception(f"Status {resp.status_code}")
-            data = resp.json()
+            resp = urlopen(url, timeout=10)
+            data = json.load(resp)
             price = data.get("c")
-
             if price is None or price == 0:
                 return None
-
             return price
         except:
-            await asyncio.sleep(2 ** attempt)
+            time.sleep(2 ** attempt)
     return None
 
 # =========================
@@ -170,65 +158,52 @@ async def get_stock_data(session, symbol):
 
 last_alpha_call = 0
 
-async def get_stock_volume(session, symbol):
-
+def get_stock_volume(symbol):
     global last_alpha_call
-
     now = time.time()
     if now - last_alpha_call < 12:
-        await asyncio.sleep(12 - (now - last_alpha_call))
+        time.sleep(12 - (now - last_alpha_call))
 
     last_alpha_call = time.time()
-
     try:
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
-        resp = await session.get(url)
-        data = resp.json()
+        resp = urlopen(url, timeout=10)
+        data = json.load(resp)
         volume = data.get("Global Quote", {}).get("06. volume")
         if volume:
             return int(volume)
     except:
         pass
-
     return 0
 
 # =========================
 # FETCH COMMODITY DATA
 # =========================
 
-async def get_commodity_data(session, symbols_batch):
+def get_commodity_data(symbols_batch):
     symbols_str = ",".join(symbols_batch)
-
     for attempt in range(3):
         try:
             url = f"https://api.commoditypriceapi.com/v2/rates/latest?symbols={symbols_str}"
-            headers = {"x-api-key": COMMODITY_API_KEY}
-
-            resp = await session.get(url, headers=headers)
-            if resp.status_code != 200:
-                raise Exception(f"Status {resp.status_code}")
-
-            data = resp.json()
+            req = Request(url, headers={"x-api-key": COMMODITY_API_KEY})
+            resp = urlopen(req, timeout=10)
+            data = json.load(resp)
             rates = data.get("rates", {})
             result = {}
-
             for sym in symbols_batch:
                 price = rates.get(sym)
                 if price is not None:
                     result[sym] = float(price)
-
             return result
         except:
-            await asyncio.sleep(2 ** attempt)
-
+            time.sleep(2 ** attempt)
     return {}
 
 # =========================
 # PROCESS SYMBOL
 # =========================
 
-async def process_symbol(session, symbol, price):
-
+def process_symbol(symbol, price):
     if not price:
         return
 
@@ -253,10 +228,8 @@ async def process_symbol(session, symbol, price):
     price_growth = ((price - baseline_price) / baseline_price) * 100
 
     if symbol in COMMODITIES:
-
         spike = price_growth >= PRICE_SPIKE_PERCENT
         volume = 0
-
         chart = f"https://www.tradingview.com/symbols/{symbol}/"
         message = (
             f"⛏️ COMMODITY MOVE ALERT\n\n"
@@ -266,24 +239,16 @@ async def process_symbol(session, symbol, price):
             f"――――――――――――――――――\n\n"
             f"Chart: {chart}"
         )
-
     else:
-
         if price_growth < PRICE_SPIKE_PERCENT:
             return
-
-        volume = await get_stock_volume(session, symbol)
-
+        volume = get_stock_volume(symbol)
         if volume < MIN_VOLUME:
             return
-
         avg_daily_value = price * volume
-
         if avg_daily_value < MIN_DAILY_VALUE:
             return
-
         spike = True
-
         chart = f"https://www.tradingview.com/symbols/{symbol}/"
         message = (
             f"📈 MARKET SPIKE ALERT\n\n"
@@ -296,7 +261,6 @@ async def process_symbol(session, symbol, price):
         )
 
     if spike and alerted == 0:
-
         cursor.execute(
             "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",
             (price, volume, now, symbol)
@@ -306,75 +270,54 @@ async def process_symbol(session, symbol, price):
         alerts_state[symbol] = now
         save_alerts_state()
 
-        await send_telegram(session, message)
+        send_telegram(message)
 
 # =========================
 # SCAN STOCKS
 # =========================
 
-async def scan_stocks(session):
-
+def scan_stocks():
     print("Scanning liquid stocks...")
-
     for i in range(0, len(STOCKS), BATCH_SIZE):
-
         batch = STOCKS[i:i+BATCH_SIZE]
-        tasks = [get_stock_data(session, symbol) for symbol in batch]
-        results = await asyncio.gather(*tasks)
-
-        for symbol, price in zip(batch, results):
+        for symbol in batch:
+            price = get_stock_data(symbol)
             if not price:
                 continue
-            await process_symbol(session, symbol, price)
-
-        await asyncio.sleep(1)
+            process_symbol(symbol, price)
+        time.sleep(1)
 
 # =========================
 # SCAN COMMODITIES
 # =========================
 
-async def scan_commodities(session):
-
+def scan_commodities():
     print("Scanning commodities...")
-
     for i in range(0, len(COMMODITIES), BATCH_SIZE):
-
         batch = COMMODITIES[i:i+BATCH_SIZE]
-        data = await get_commodity_data(session, batch)
-
+        data = get_commodity_data(batch)
         for symbol, price in data.items():
-            await process_symbol(session, symbol, price)
-
-        await asyncio.sleep(1)
+            process_symbol(symbol, price)
+        time.sleep(1)
 
 # =========================
 # MAIN LOOP
 # =========================
 
-async def main():
-
+def main():
     print("Starting Liquid Market Scanner")
-
-    await load_stock_list()
-
-    async with httpx.AsyncClient(timeout=10) as session:
-
-        startup_msg = (
-            f"Market scanner started\n"
-            f"Stocks loaded: {len(STOCKS)}\n"
-            f"Commodities: {', '.join(COMMODITIES)}\n\n"
-            f"ALERTS COMING SOON 💎"
-        )
-        await send_telegram(session, startup_msg)
-
-        while True:
-            try:
-                await scan_stocks(session)
-                await scan_commodities(session)
-                print("Sleeping...\n")
-                await asyncio.sleep(CHECK_INTERVAL)
-            except:
-                traceback.print_exc()
+    load_stock_list()
+    send_telegram(
+        f"Market scanner started\nStocks loaded: {len(STOCKS)}\nCommodities: {', '.join(COMMODITIES)}\n\nALERTS COMING SOON 💎"
+    )
+    while True:
+        try:
+            scan_stocks()
+            scan_commodities()
+            print("Sleeping...\n")
+            time.sleep(CHECK_INTERVAL)
+        except:
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
