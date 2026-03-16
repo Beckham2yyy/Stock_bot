@@ -18,7 +18,9 @@ ALPHA_VANTAGE_KEY = "2HUZXG0RQSLXVQSZ"
 TELEGRAM_BOT_TOKEN = "8759682838:AAFVFNMA2kFLgAQDgzOTVSMmRhWkUk6Hxn8"
 TELEGRAM_CHAT_IDS = [-1003753296608]
 
-PRICE_SPIKE_PERCENT = 3
+PRICE_SPIKE_PERCENT = 2
+PRICE_DROP_PERCENT = -1.6
+
 MIN_VOLUME = 1_000_000
 MIN_DAILY_VALUE = 10_000_000
 
@@ -227,50 +229,81 @@ def process_symbol(symbol, price):
 
     price_growth = ((price - baseline_price) / baseline_price) * 100
 
+    chart = f"https://www.tradingview.com/symbols/{symbol}/"
+
     if symbol in COMMODITIES:
-        spike = price_growth >= PRICE_SPIKE_PERCENT
-        volume = 0
-        chart = f"https://www.tradingview.com/symbols/{symbol}/"
-        message = (
-            f"⛏️ COMMODITY MOVE ALERT\n\n"
-            f"Asset: {symbol}\n"
-            f"Price: ${price:.2f}\n"
-            f"Change: {price_growth:+.2f}%\n"
-            f"――――――――――――――――――\n\n"
-            f"Chart: {chart}"
-        )
-    else:
-        if price_growth < PRICE_SPIKE_PERCENT:
+
+        if price_growth >= PRICE_SPIKE_PERCENT:
+            message = (
+                f"⛏️ COMMODITY SPIKE ALERT\n\n"
+                f"Asset: {symbol}\n"
+                f"Price: ${price:.2f}\n"
+                f"Change: {price_growth:+.2f}%\n"
+                f"――――――――――――――――――\n\n"
+                f"Chart: {chart}"
+            )
+
+        elif price_growth <= PRICE_DROP_PERCENT:
+            message = (
+                f"⚠️ COMMODITY DROP ALERT\n\n"
+                f"Asset: {symbol}\n"
+                f"Price: ${price:.2f}\n"
+                f"Change: {price_growth:+.2f}%\n"
+                f"――――――――――――――――――\n\n"
+                f"Chart: {chart}"
+            )
+        else:
             return
+
+        volume = 0
+
+    else:
+
+        if price_growth < PRICE_SPIKE_PERCENT and price_growth > PRICE_DROP_PERCENT:
+            return
+
         volume = get_stock_volume(symbol)
+
         if volume < MIN_VOLUME:
             return
+
         avg_daily_value = price * volume
+
         if avg_daily_value < MIN_DAILY_VALUE:
             return
-        spike = True
-        chart = f"https://www.tradingview.com/symbols/{symbol}/"
-        message = (
-            f"📈 MARKET SPIKE ALERT\n\n"
-            f"Symbol: {symbol}\n"
-            f"Price: ${price:.2f}\n"
-            f"Change: {price_growth:+.2f}%\n"
-            f"Volume: {volume:,}\n"
-            f"――――――――――――――――――\n\n"
-            f"Chart: {chart}"
-        )
 
-    if spike and alerted == 0:
-        cursor.execute(
-            "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",
-            (price, volume, now, symbol)
-        )
-        conn.commit()
+        if price_growth >= PRICE_SPIKE_PERCENT:
+            message = (
+                f"📈 STOCK SPIKE ALERT\n\n"
+                f"Symbol: {symbol}\n"
+                f"Price: ${price:.2f}\n"
+                f"Change: {price_growth:+.2f}%\n"
+                f"Volume: {volume:,}\n"
+                f"――――――――――――――――――\n\n"
+                f"Chart: {chart}"
+            )
 
-        alerts_state[symbol] = now
-        save_alerts_state()
+        else:
+            message = (
+                f"📉 STOCK DROP ALERT\n\n"
+                f"Symbol: {symbol}\n"
+                f"Price: ${price:.2f}\n"
+                f"Change: {price_growth:+.2f}%\n"
+                f"Volume: {volume:,}\n"
+                f"――――――――――――――――――\n\n"
+                f"Chart: {chart}"
+            )
 
-        send_telegram(message)
+    cursor.execute(
+        "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",
+        (price, volume, now, symbol)
+    )
+    conn.commit()
+
+    alerts_state[symbol] = now
+    save_alerts_state()
+
+    send_telegram(message)
 
 # =========================
 # SCAN STOCKS
