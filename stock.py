@@ -102,7 +102,6 @@ def load_stock_list():
     global STOCKS
     cache_file = "stocks_cache.json"
 
-    # Expanded static fallback (100+ solid tickers)
     static_fallback_stocks = [
         "AAPL","MSFT","TSLA","NVDA","AMZN","META","AMD","INTC","NFLX","GOOGL",
         "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE",
@@ -114,7 +113,6 @@ def load_stock_list():
         "SHOP","ETSY","ROKU","NET","CRWD","OKTA","ZS","PLAN","DOCU","TWLO","DDOG"
     ][:MAX_STOCKS]
 
-    # Load cache first
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r") as f:
@@ -124,7 +122,6 @@ def load_stock_list():
         except:
             print("Cache corrupted, downloading fresh list")
 
-    # Attempt Finnhub primary
     print("Downloading stock list from Finnhub...")
     for attempt in range(3):
         try:
@@ -142,7 +139,6 @@ def load_stock_list():
             print(f"Attempt {attempt+1} failed to load stock list from Finnhub: {e}")
             time.sleep(2 ** attempt)
 
-    # Fallback to Twelve Data
     print("Finnhub failed, trying Twelve Data...")
     for attempt in range(3):
         try:
@@ -160,7 +156,6 @@ def load_stock_list():
             print(f"Twelve Data attempt {attempt+1} failed: {e}")
             time.sleep(2 ** attempt)
 
-    # Both APIs failed → use static expanded list
     print("Both APIs failed, using static fallback")
     STOCKS = static_fallback_stocks
 
@@ -183,7 +178,7 @@ def get_stock_data(symbol):
     return None
 
 # =========================
-# FETCH VOLUME FROM ALPHA VANTAGE
+# FETCH VOLUME FROM ALPHA VANTAGE → FALLBACK TWELVE DATA
 # =========================
 
 last_alpha_call = 0
@@ -195,6 +190,8 @@ def get_stock_volume(symbol):
         time.sleep(12 - (now - last_alpha_call))
 
     last_alpha_call = time.time()
+
+    # Try Alpha Vantage first
     try:
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
         resp = urlopen(url, timeout=10)
@@ -204,6 +201,18 @@ def get_stock_volume(symbol):
             return int(volume)
     except:
         pass
+
+    # Fallback to Twelve Data
+    try:
+        url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"
+        resp = urlopen(url, timeout=10)
+        data = json.load(resp)
+        volume = data.get("volume")
+        if volume:
+            return int(volume)
+    except:
+        pass
+
     return 0
 
 # =========================
@@ -257,7 +266,6 @@ def process_symbol(symbol, price):
 
     price_growth = ((price - baseline_price) / baseline_price) * 100
 
-    # default chart
     chart = f"https://www.tradingview.com/symbols/{symbol}/"
 
     if symbol in COMMODITIES:
