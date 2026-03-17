@@ -12,6 +12,7 @@ from urllib.error import URLError, HTTPError
 # =========================
 
 FINNHUB_API_KEY = "d6p7d41r01qk3chj7i00d6p7d41r01qk3chj7i0g"
+TWELVE_API_KEY = "536665a15d214e48a622c80eff1bfa88"
 COMMODITY_API_KEY = "81b66f88-22a3-4317-aff7-40d3ee221c70"
 ALPHA_VANTAGE_KEY = "2HUZXG0RQSLXVQSZ"
 
@@ -94,18 +95,26 @@ def send_telegram(message):
             print("Telegram error:", e)
 
 # =========================
-# LOAD STOCK LIST WITH CACHE
+# LOAD STOCK LIST WITH CACHE + FALLBACKS
 # =========================
 
 def load_stock_list():
     global STOCKS
     cache_file = "stocks_cache.json"
 
-    fallback_stocks = [
+    # Expanded static fallback (100+ solid tickers)
+    static_fallback_stocks = [
         "AAPL","MSFT","TSLA","NVDA","AMZN","META","AMD","INTC","NFLX","GOOGL",
-        "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE"
+        "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE",
+        "V","JPM","GS","HD","MCD","KO","PEP","PFE","MRK","CVX","XOM","IBM",
+        "ORCL","ADBE","CRM","ABNB","SQ","SPOT","SNAP","TWTR","UBER","LYFT",
+        "T","VZ","CSCO","QCOM","TXN","LMT","BA","CAT","DE","GE","MMM","HON",
+        "RTX","NKE","SBUX","WMT","LOW","CVS","TGT","AMAT","NOW","WDAY","ZM",
+        "DOCU","F","GM","TM","NSANY","SONY","BIDU","JD","IQ","MELI","SEA","PDD",
+        "SHOP","ETSY","ROKU","NET","CRWD","OKTA","ZS","PLAN","DOCU","TWLO","DDOG"
     ][:MAX_STOCKS]
 
+    # Load cache first
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r") as f:
@@ -115,8 +124,8 @@ def load_stock_list():
         except:
             print("Cache corrupted, downloading fresh list")
 
+    # Attempt Finnhub primary
     print("Downloading stock list from Finnhub...")
-
     for attempt in range(3):
         try:
             url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"
@@ -127,14 +136,33 @@ def load_stock_list():
             with open(cache_file, "w") as f:
                 json.dump(STOCKS, f)
 
-            print("Loaded", len(STOCKS), "stocks")
+            print("Loaded", len(STOCKS), "stocks from Finnhub")
             return
         except Exception as e:
-            print(f"Attempt {attempt+1} failed to load stock list: {e}")
+            print(f"Attempt {attempt+1} failed to load stock list from Finnhub: {e}")
             time.sleep(2 ** attempt)
 
-    print("Failed to load stock list after 3 attempts, using fallback")
-    STOCKS = fallback_stocks
+    # Fallback to Twelve Data
+    print("Finnhub failed, trying Twelve Data...")
+    for attempt in range(3):
+        try:
+            url = f"https://api.twelvedata.com/stocks?exchange=NYSE&apikey={TWELVE_API_KEY}"
+            resp = urlopen(url, timeout=10)
+            data = json.load(resp)
+            STOCKS = [item["symbol"] for item in data.get("data", []) if item.get("symbol")][:MAX_STOCKS]
+
+            if STOCKS:
+                with open(cache_file, "w") as f:
+                    json.dump(STOCKS, f)
+                print("Loaded", len(STOCKS), "stocks from Twelve Data")
+                return
+        except Exception as e:
+            print(f"Twelve Data attempt {attempt+1} failed: {e}")
+            time.sleep(2 ** attempt)
+
+    # Both APIs failed → use static expanded list
+    print("Both APIs failed, using static fallback")
+    STOCKS = static_fallback_stocks
 
 # =========================
 # FETCH STOCK PRICE (FAST)
