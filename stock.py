@@ -229,9 +229,17 @@ def process_symbol(symbol, price):
 
     price_growth = ((price - baseline_price) / baseline_price) * 100
 
+    # default chart
     chart = f"https://www.tradingview.com/symbols/{symbol}/"
 
     if symbol in COMMODITIES:
+
+        if symbol == "XAU":
+            chart = "https://www.investing.com/commodities/gold"
+        elif symbol == "XAG":
+            chart = "https://www.investing.com/commodities/silver"
+        elif symbol == "WTIOIL-FUT":
+            chart = "https://www.investing.com/commodities/crude-oil"
 
         if price_growth >= PRICE_SPIKE_PERCENT:
             message = (
