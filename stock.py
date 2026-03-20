@@ -16,7 +16,7 @@ TWELVE_API_KEY = "536665a15d214e48a622c80eff1bfa88"
 COMMODITY_API_KEY = "81b66f88-22a3-4317-aff7-40d3ee221c70"
 ALPHA_VANTAGE_KEY = "2HUZXG0RQSLXVQSZ"
 
-TELEGRAM_BOT_TOKEN = "8759682838:AAFVFNMA2kFLgAQDgzOTVSMmRhWkUk6Hxn8"
+TELEGRAM_BOT_TOKEN = "8537126256:AAFrwFUTmSatD3VUORG44RcBPtiNjUK0P3w"
 TELEGRAM_CHAT_IDS = [-1003753296608, 7198809557]
 
 PRICE_SPIKE_PERCENT = 1.0
@@ -32,9 +32,9 @@ MAX_STOCKS = 300
 BATCH_SIZE = 30
 
 COMMODITIES = [
-"XAU",
-"XAG",
-"WTIOIL-FUT"
+    "XAU",
+    "XAG",
+    "WTIOIL-FUT"
 ]
 
 STOCKS = []
@@ -50,11 +50,11 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS assets (
-symbol TEXT PRIMARY KEY,
-alerted INTEGER DEFAULT 0,
-baseline_price REAL DEFAULT 0,
-baseline_volume REAL DEFAULT 0,
-last_alert INTEGER DEFAULT 0
+    symbol TEXT PRIMARY KEY,
+    alerted INTEGER DEFAULT 0,
+    baseline_price REAL DEFAULT 0,
+    baseline_volume REAL DEFAULT 0,
+    last_alert INTEGER DEFAULT 0
 )
 """)
 
@@ -102,61 +102,61 @@ def load_stock_list():
     global STOCKS
     cache_file = "stocks_cache.json"
 
-    static_fallback_stocks = [  
-        "AAPL","MSFT","TSLA","NVDA","AMZN","META","AMD","INTC","NFLX","GOOGL",  
-        "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE",  
-        "V","JPM","GS","HD","MCD","KO","PEP","PFE","MRK","CVX","XOM","IBM",  
-        "ORCL","ADBE","CRM","ABNB","SQ","SPOT","SNAP","TWTR","UBER","LYFT",  
-        "T","VZ","CSCO","QCOM","TXN","LMT","BA","CAT","DE","GE","MMM","HON",  
-        "RTX","NKE","SBUX","WMT","LOW","CVS","TGT","AMAT","NOW","WDAY","ZM",  
-        "DOCU","F","GM","TM","NSANY","SONY","BIDU","JD","IQ","MELI","SEA","PDD",  
-        "SHOP","ETSY","ROKU","NET","CRWD","OKTA","ZS","PLAN","DOCU","TWLO","DDOG"  
-    ][:MAX_STOCKS]  
+    static_fallback_stocks = [    
+        "AAPL","MSFT","TSLA","NVDA","AMZN","META","AMD","INTC","NFLX","GOOGL",    
+        "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE",    
+        "V","JPM","GS","HD","MCD","KO","PEP","PFE","MRK","CVX","XOM","IBM",    
+        "ORCL","ADBE","CRM","ABNB","SQ","SPOT","SNAP","TWTR","UBER","LYFT",    
+        "T","VZ","CSCO","QCOM","TXN","LMT","BA","CAT","DE","GE","MMM","HON",    
+        "RTX","NKE","SBUX","WMT","LOW","CVS","TGT","AMAT","NOW","WDAY","ZM",    
+        "DOCU","F","GM","TM","NSANY","SONY","BIDU","JD","IQ","MELI","SEA","PDD",    
+        "SHOP","ETSY","ROKU","NET","CRWD","OKTA","ZS","PLAN","DOCU","TWLO","DDOG"    
+    ][:MAX_STOCKS]    
 
-    if os.path.exists(cache_file):  
-        try:  
-            with open(cache_file, "r") as f:  
-                STOCKS = json.load(f)  
-            print(f"Loaded {len(STOCKS)} stocks from cache")  
-            return  
-        except:  
-            print("Cache corrupted, downloading fresh list")  
+    if os.path.exists(cache_file):    
+        try:    
+            with open(cache_file, "r") as f:    
+                STOCKS = json.load(f)    
+            print(f"Loaded {len(STOCKS)} stocks from cache")    
+            return    
+        except:    
+            print("Cache corrupted, downloading fresh list")    
 
-    print("Downloading stock list from Finnhub...")  
-    for attempt in range(3):  
-        try:  
-            url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"  
-            resp = urlopen(url, timeout=10)  
-            data = json.load(resp)  
-            STOCKS = [item["symbol"] for item in data if item["symbol"].isalpha()][:MAX_STOCKS]  
+    print("Downloading stock list from Finnhub...")    
+    for attempt in range(3):    
+        try:    
+            url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"    
+            resp = urlopen(url, timeout=10)    
+            data = json.load(resp)    
+            STOCKS = [item["symbol"] for item in data if item["symbol"].isalpha()][:MAX_STOCKS]    
 
-            with open(cache_file, "w") as f:  
-                json.dump(STOCKS, f)  
+            with open(cache_file, "w") as f:    
+                json.dump(STOCKS, f)    
 
-            print("Loaded", len(STOCKS), "stocks from Finnhub")  
-            return  
-        except Exception as e:  
-            print(f"Attempt {attempt+1} failed to load stock list from Finnhub: {e}")  
-            time.sleep(2 ** attempt)  
+            print("Loaded", len(STOCKS), "stocks from Finnhub")    
+            return    
+        except Exception as e:    
+            print(f"Attempt {attempt+1} failed to load stock list from Finnhub: {e}")    
+            time.sleep(2 ** attempt)    
 
-    print("Finnhub failed, trying Twelve Data...")  
-    for attempt in range(3):  
-        try:  
-            url = f"https://api.twelvedata.com/stocks?exchange=NYSE&apikey={TWELVE_API_KEY}"  
-            resp = urlopen(url, timeout=10)  
-            data = json.load(resp)  
-            STOCKS = [item["symbol"] for item in data.get("data", []) if item.get("symbol")][:MAX_STOCKS]  
+    print("Finnhub failed, trying Twelve Data...")    
+    for attempt in range(3):    
+        try:    
+            url = f"https://api.twelvedata.com/stocks?exchange=NYSE&apikey={TWELVE_API_KEY}"    
+            resp = urlopen(url, timeout=10)    
+            data = json.load(resp)    
+            STOCKS = [item["symbol"] for item in data.get("data", []) if item.get("symbol")][:MAX_STOCKS]    
 
-            if STOCKS:  
-                with open(cache_file, "w") as f:  
-                    json.dump(STOCKS, f)  
-                print("Loaded", len(STOCKS), "stocks from Twelve Data")  
-                return  
-        except Exception as e:  
-            print(f"Twelve Data attempt {attempt+1} failed: {e}")  
-            time.sleep(2 ** attempt)  
+            if STOCKS:    
+                with open(cache_file, "w") as f:    
+                    json.dump(STOCKS, f)    
+                print("Loaded", len(STOCKS), "stocks from Twelve Data")    
+                return    
+        except Exception as e:    
+            print(f"Twelve Data attempt {attempt+1} failed: {e}")    
+            time.sleep(2 ** attempt)    
 
-    print("Both APIs failed, using static fallback")  
+    print("Both APIs failed, using static fallback")    
     STOCKS = static_fallback_stocks
 
 # =========================
@@ -189,16 +189,16 @@ def get_stock_volume(symbol):
     if now - last_alpha_call < 12:
         time.sleep(12 - (now - last_alpha_call))
 
-    last_alpha_call = time.time()  
-    try:  
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"  
-        resp = urlopen(url, timeout=10)  
-        data = json.load(resp)  
-        volume = data.get("Global Quote", {}).get("06. volume")  
-        if volume:  
-            return int(volume)  
-    except:  
-        pass  
+    last_alpha_call = time.time()    
+    try:    
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"    
+        resp = urlopen(url, timeout=10)    
+        data = json.load(resp)    
+        volume = data.get("Global Quote", {}).get("06. volume")    
+        if volume:    
+            return int(volume)    
+    except:    
+        pass    
     return 0
 
 # =========================
@@ -232,106 +232,117 @@ def process_symbol(symbol, price):
     if not price:
         return
 
-    now = int(time.time())  
+    now = int(time.time())    
 
-    cursor.execute(  
-        "SELECT alerted, baseline_price, baseline_volume, last_alert FROM assets WHERE symbol=?",  
-        (symbol,)  
-    )  
+    cursor.execute(    
+        "SELECT alerted, baseline_price, baseline_volume, last_alert FROM assets WHERE symbol=?",    
+        (symbol,)    
+    )    
 
-    row = cursor.fetchone()  
-    alerted, baseline_price, baseline_volume, last_alert = (0, price, 0, 0) if not row else row  
+    row = cursor.fetchone()    
+    first_scan = row is None
+    alerted, baseline_price, baseline_volume, last_alert = (0, price, 0, 0) if first_scan else row    
 
-    if alerted == 1 and last_alert and (now - last_alert) >= COOLDOWN:  
-        cursor.execute("UPDATE assets SET alerted=0 WHERE symbol=?", (symbol,))  
-        conn.commit()  
-        alerted = 0  
+    # reset alert after cooldown
+    if alerted == 1 and last_alert and (now - last_alert) >= COOLDOWN:    
+        cursor.execute("UPDATE assets SET alerted=0 WHERE symbol=?", (symbol,))    
+        conn.commit()    
+        alerted = 0    
 
-    if last_alert and (now - last_alert) < COOLDOWN:  
-        return  
+    if last_alert and (now - last_alert) < COOLDOWN:    
+        return    
 
-    price_growth = ((price - baseline_price) / baseline_price) * 100  
+    # Skip alerts and volume checks on first scan
+    if first_scan:
+        cursor.execute(
+            "INSERT OR REPLACE INTO assets (symbol, baseline_price, baseline_volume) VALUES (?, ?, ?)",
+            (symbol, price, 0)
+        )
+        conn.commit()
+        return
 
-    chart = f"https://www.tradingview.com/symbols/{symbol}/"  
+    price_growth = ((price - baseline_price) / baseline_price) * 100    
 
-    if symbol in COMMODITIES:  
+    chart = f"https://www.tradingview.com/symbols/{symbol}/"    
 
-        if symbol == "XAU":  
-            chart = "https://www.investing.com/commodities/gold"  
-        elif symbol == "XAG":  
-            chart = "https://www.investing.com/commodities/silver"  
-        elif symbol == "WTIOIL-FUT":  
-            chart = "https://www.investing.com/commodities/crude-oil"  
+    if symbol in COMMODITIES:    
 
-        if price_growth >= PRICE_SPIKE_PERCENT:  
-            message = (  
-                f"⛏️ COMMODITY SPIKE ALERT\n\n"  
-                f"Asset: {symbol}\n"  
-                f"Price: ${price:.2f}\n"  
-                f"Change: {price_growth:+.2f}%\n"  
-                f"――――――――――――――――――\n\n"  
-                f"Chart: {chart}"  
-            )  
+        if symbol == "XAU":    
+            chart = "https://www.investing.com/commodities/gold"    
+        elif symbol == "XAG":    
+            chart = "https://www.investing.com/commodities/silver"    
+        elif symbol == "WTIOIL-FUT":    
+            chart = "https://www.investing.com/commodities/crude-oil"    
 
-        elif price_growth <= PRICE_DROP_PERCENT:  
-            message = (  
-                f"⚠️ COMMODITY DROP ALERT\n\n"  
-                f"Asset: {symbol}\n"  
-                f"Price: ${price:.2f}\n"  
-                f"Change: {price_growth:+.2f}%\n"  
-                f"――――――――――――――――――\n\n"  
-                f"Chart: {chart}"  
-            )  
-        else:  
-            return  
+        if price_growth >= PRICE_SPIKE_PERCENT:    
+            message = (    
+                f"⛏️ COMMODITY SPIKE ALERT\n\n"    
+                f"Asset: {symbol}\n"    
+                f"Price: ${price:.2f}\n"    
+                f"Change: {price_growth:+.2f}%\n"    
+                f"――――――――――――――――――\n\n"    
+                f"Chart: {chart}"    
+            )    
 
-        volume = 0  
+        elif price_growth <= PRICE_DROP_PERCENT:    
+            message = (    
+                f"⚠️ COMMODITY DROP ALERT\n\n"    
+                f"Asset: {symbol}\n"    
+                f"Price: ${price:.2f}\n"    
+                f"Change: {price_growth:+.2f}%\n"    
+                f"――――――――――――――――――\n\n"    
+                f"Chart: {chart}"    
+            )    
+        else:    
+            return    
 
-    else:  
+        volume = 0    
 
-        if price_growth < PRICE_SPIKE_PERCENT and price_growth > PRICE_DROP_PERCENT:  
-            return  
+    else:    
 
-        volume = get_stock_volume(symbol)  
+        if price_growth < PRICE_SPIKE_PERCENT and price_growth > PRICE_DROP_PERCENT:    
+            return    
 
-        if volume < MIN_VOLUME:  
-            return  
+        volume = get_stock_volume(symbol)    
 
-        avg_daily_value = price * volume  
+        if volume < MIN_VOLUME:    
+            return    
 
-        if avg_daily_value < MIN_DAILY_VALUE:  
-            return  
+        avg_daily_value = price * volume    
 
-        if price_growth >= PRICE_SPIKE_PERCENT:  
-            message = (  
-                f"📈 STOCK SPIKE ALERT\n\n"  
-                f"Symbol: {symbol}\n"  
-                f"Price: ${price:.2f}\n"  
-                f"Change: {price_growth:+.2f}%\n"  
-                f"Volume: {volume:,}\n"  
-                f"――――――――――――――――――\n\n"  
-                f"Chart: {chart}"  
-            )  
+        if avg_daily_value < MIN_DAILY_VALUE:    
+            return    
 
-        else:  
-            message = (  
-                f"📉 STOCK DROP ALERT\n\n"  
-                f"Symbol: {symbol}\n"  
-                f"Price: ${price:.2f}\n"  
-                f"Change: {price_growth:+.2f}%\n"  
-                f"Volume: {volume:,}\n"  
-                f"――――――――――――――――――\n\n"  
-                f"Chart: {chart}"  
-            )  
+        if price_growth >= PRICE_SPIKE_PERCENT:    
+            message = (    
+                f"📈 STOCK SPIKE ALERT\n\n"    
+                f"Symbol: {symbol}\n"    
+                f"Price: ${price:.2f}\n"    
+                f"Change: {price_growth:+.2f}%\n"    
+                f"Volume: {volume:,}\n"    
+                f"――――――――――――――――――\n\n"    
+                f"Chart: {chart}"    
+            )    
 
-    cursor.execute(  
-        "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",  
-        (price, volume, now, symbol)  
-    )  
-    conn.commit()  
+        else:    
+            message = (    
+                f"📉 STOCK DROP ALERT\n\n"    
+                f"Symbol: {symbol}\n"    
+                f"Price: ${price:.2f}\n"    
+                f"Change: {price_growth:+.2f}%\n"    
+                f"Volume: {volume:,}\n"    
+                f"――――――――――――――――――\n\n"    
+                f"Chart: {chart}"    
+            )    
 
-    alerts_state[symbol] = now  
-    save_alerts_state()  
+    cursor.execute(    
+        "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",    
+        (price, volume, now, symbol)    
+    )    
+    conn.commit()    
+
+    alerts_state[symbol] = now    
+    save_alerts_state()    
 
     send_telegram(message)
 
