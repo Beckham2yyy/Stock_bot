@@ -7,11 +7,11 @@ import math
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
-=========================
+# =========================
 
-CONFIG
+# CONFIG
 
-=========================
+# =========================
 
 FINNHUB_API_KEY = "d6p7d41r01qk3chj7i00d6p7d41r01qk3chj7i0g"
 TWELVE_API_KEY = "536665a15d214e48a622c80eff1bfa88"
@@ -58,11 +58,11 @@ STOCKS = []
 
 ALERTS_STATE_FILE = "alerts_state.json"
 
-=========================
+# =========================
 
-DATABASE
+# DATABASE
 
-=========================
+# =========================
 
 conn = sqlite3.connect("market.db")
 cursor = conn.cursor()
@@ -79,11 +79,11 @@ last_alert INTEGER DEFAULT 0
 
 conn.commit()
 
-=========================
+# =========================
 
-ALERTS STATE PERSISTENCE
+# ALERTS STATE PERSISTENCE
 
-=========================
+# =========================
 
 alerts_state = {}
 
@@ -101,11 +101,11 @@ def save_alerts_state():
     except Exception as e:
         print("Failed to save alerts state:", e)
 
-=========================
+# =========================
 
-TELEGRAM
+# TELEGRAM
 
-=========================
+# =========================
 
 def send_telegram(message):
     for chat_id in TELEGRAM_CHAT_IDS:
@@ -117,11 +117,11 @@ def send_telegram(message):
         except Exception as e:
             print("Telegram error:", e)
 
-=========================
+# =========================
 
-LOAD STOCK LIST WITH CACHE + FALLBACKS
+# LOAD STOCK LIST WITH CACHE + FALLBACKS
 
-=========================
+# =========================
 
 def load_stock_list():
     global STOCKS
@@ -184,11 +184,11 @@ def load_stock_list():
     print("Both APIs failed, using static fallback")        
     STOCKS = static_fallback_stocks
 
-=========================
+# =========================
 
-FETCH STOCK PRICE (FAST)
+# FETCH STOCK PRICE (FAST)
 
-=========================
+# =========================
 
 def get_stock_data(symbol):
     # Try Finnhub first
@@ -219,11 +219,11 @@ def get_stock_data(symbol):
 
     return None
 
-=========================
+# =========================
 
-FETCH VOLUME FROM ALPHA VANTAGE
+# FETCH VOLUME FROM ALPHA VANTAGE
 
-=========================
+# =========================
 
 last_alpha_call = 0
 
@@ -260,11 +260,11 @@ def get_stock_volume(symbol):
 
     return 0
 
-=========================
+# =========================
 
-FETCH COMMODITY DATA (with fallback)
+# FETCH COMMODITY DATA (with fallback)
 
-=========================
+# =========================
 
 def get_commodity_data(symbols_batch):
     # First try CommodityPriceAPI
@@ -313,11 +313,11 @@ def get_commodity_data(symbols_batch):
         print(f"OilPriceAPI fallback failed: {e}")  
         return {}
 
-=========================
+# =========================
 
-FETCH FOREX DATA (with fallback)
+# FETCH FOREX DATA (with fallback)
 
-=========================
+# =========================
 
 def get_forex_data(symbols_batch):
     # First try Fixer.io
@@ -366,11 +366,11 @@ def get_forex_data(symbols_batch):
             print(f"Twelve Data forex fallback failed for {pair}: {e}")
     return result
 
-=========================
+# =========================
 
-PROCESS SYMBOL
+# PROCESS SYMBOL
 
-=========================
+# =========================
 
 def process_symbol(symbol, price):
     if not price:
@@ -518,11 +518,11 @@ def process_symbol(symbol, price):
 
     send_telegram(message)
 
-=========================
+# =========================
 
-SCAN STOCKS
+# SCAN STOCKS
 
-=========================
+# =========================
 
 def scan_stocks():
     print("Scanning liquid stocks...")
@@ -535,11 +535,11 @@ def scan_stocks():
             process_symbol(symbol, price)
             time.sleep(1)
 
-=========================
+# =========================
 
-SCAN COMMODITIES
+# SCAN COMMODITIES
 
-=========================
+# =========================
 
 def scan_commodities():
     print("Scanning commodities...")
@@ -550,11 +550,11 @@ def scan_commodities():
             process_symbol(symbol, price)
             time.sleep(1)
 
-=========================
+# =========================
 
-SCAN CURRENCIES                                           # Added
+# SCAN CURRENCIES                                           # Added
 
-=========================
+# =========================
 
 def scan_currencies():
     print("Scanning currencies...")
@@ -565,11 +565,11 @@ def scan_currencies():
             process_symbol(symbol, price)
             time.sleep(1)
 
-=========================
+# =========================
 
-MAIN LOOP
+# MAIN LOOP
 
-=========================
+# =========================
 
 def main():
     print("Starting Liquid Market Scanner")
