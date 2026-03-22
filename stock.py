@@ -7,14 +7,18 @@ import math
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
-# =========================
-# CONFIG
-# =========================
+=========================
+
+CONFIG
+
+=========================
 
 FINNHUB_API_KEY = "d6p7d41r01qk3chj7i00d6p7d41r01qk3chj7i0g"
 TWELVE_API_KEY = "536665a15d214e48a622c80eff1bfa88"
 COMMODITY_API_KEY = "81b66f88-22a3-4317-aff7-40d3ee221c70"
 ALPHA_VANTAGE_KEY = "2HUZXG0RQSLXVQSZ"
+OILPRICE_API_KEY = "71a7c209df5f57d072367f4a09d9985ebcc5e3ed2bbe52e687c007dd23926d6c"
+FIXER_API_KEY = "70820ab44387be352ff27fed8e85116d"          # Added
 
 TELEGRAM_BOT_TOKEN = "8537126256:AAFrwFUTmSatD3VUORG44RcBPtiNjUK0P3w"
 TELEGRAM_CHAT_IDS = [-1003753296608, 7198809557]
@@ -37,32 +41,49 @@ COMMODITIES = [
     "WTIOIL-FUT"
 ]
 
+CURRENCIES = [                      # Added – list of forex pairs
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD",
+    "USD/CAD",
+    "NZD/USD",
+    "USD/CHF",
+    "EUR/GBP",
+    "EUR/JPY",
+    "GBP/JPY"
+]
+
 STOCKS = []
 
 ALERTS_STATE_FILE = "alerts_state.json"
 
-# =========================
-# DATABASE
-# =========================
+=========================
+
+DATABASE
+
+=========================
 
 conn = sqlite3.connect("market.db")
 cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS assets (
-    symbol TEXT PRIMARY KEY,
-    alerted INTEGER DEFAULT 0,
-    baseline_price REAL DEFAULT 0,
-    baseline_volume REAL DEFAULT 0,
-    last_alert INTEGER DEFAULT 0
+symbol TEXT PRIMARY KEY,
+alerted INTEGER DEFAULT 0,
+baseline_price REAL DEFAULT 0,
+baseline_volume REAL DEFAULT 0,
+last_alert INTEGER DEFAULT 0
 )
 """)
 
 conn.commit()
 
-# =========================
-# ALERTS STATE PERSISTENCE
-# =========================
+=========================
+
+ALERTS STATE PERSISTENCE
+
+=========================
 
 alerts_state = {}
 
@@ -80,9 +101,11 @@ def save_alerts_state():
     except Exception as e:
         print("Failed to save alerts state:", e)
 
-# =========================
-# TELEGRAM
-# =========================
+=========================
+
+TELEGRAM
+
+=========================
 
 def send_telegram(message):
     for chat_id in TELEGRAM_CHAT_IDS:
@@ -94,74 +117,78 @@ def send_telegram(message):
         except Exception as e:
             print("Telegram error:", e)
 
-# =========================
-# LOAD STOCK LIST WITH CACHE + FALLBACKS
-# =========================
+=========================
+
+LOAD STOCK LIST WITH CACHE + FALLBACKS
+
+=========================
 
 def load_stock_list():
     global STOCKS
     cache_file = "stocks_cache.json"
 
-    static_fallback_stocks = [      
-        "AAPL","MSFT","TSLA","NVDA","AMZN","META","AMD","INTC","NFLX","GOOGL",      
-        "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE",      
-        "V","JPM","GS","HD","MCD","KO","PEP","PFE","MRK","CVX","XOM","IBM",      
-        "ORCL","ADBE","CRM","ABNB","SQ","SPOT","SNAP","TWTR","UBER","LYFT",      
-        "T","VZ","CSCO","QCOM","TXN","LMT","BA","CAT","DE","GE","MMM","HON",      
-        "RTX","NKE","SBUX","WMT","LOW","CVS","TGT","AMAT","NOW","WDAY","ZM",      
-        "DOCU","F","GM","TM","NSANY","SONY","BIDU","JD","IQ","MELI","SEA","PDD",      
-        "SHOP","ETSY","ROKU","NET","CRWD","OKTA","ZS","PLAN","DOCU","TWLO","DDOG"      
-    ][:MAX_STOCKS]      
+    static_fallback_stocks = [        
+        "AAPL","MSFT","TSLA","NVDA","AMZN","META","AMD","INTC","NFLX","GOOGL",        
+        "BABA","UBER","PYPL","SHOP","COIN","PLTR","SNOW","BA","DIS","NKE",        
+        "V","JPM","GS","HD","MCD","KO","PEP","PFE","MRK","CVX","XOM","IBM",        
+        "ORCL","ADBE","CRM","ABNB","SQ","SPOT","SNAP","TWTR","UBER","LYFT",        
+        "T","VZ","CSCO","QCOM","TXN","LMT","BA","CAT","DE","GE","MMM","HON",        
+        "RTX","NKE","SBUX","WMT","LOW","CVS","TGT","AMAT","NOW","WDAY","ZM",        
+        "DOCU","F","GM","TM","NSANY","SONY","BIDU","JD","IQ","MELI","SEA","PDD",        
+        "SHOP","ETSY","ROKU","NET","CRWD","OKTA","ZS","PLAN","DOCU","TWLO","DDOG"        
+    ][:MAX_STOCKS]        
 
-    if os.path.exists(cache_file):      
-        try:      
-            with open(cache_file, "r") as f:      
-                STOCKS = json.load(f)      
-            print(f"Loaded {len(STOCKS)} stocks from cache")      
-            return      
-        except:      
-            print("Cache corrupted, downloading fresh list")      
+    if os.path.exists(cache_file):        
+        try:        
+            with open(cache_file, "r") as f:        
+                STOCKS = json.load(f)        
+            print(f"Loaded {len(STOCKS)} stocks from cache")        
+            return        
+        except:        
+            print("Cache corrupted, downloading fresh list")        
 
-    print("Downloading stock list from Finnhub...")      
-    for attempt in range(3):      
-        try:      
-            url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"      
-            resp = urlopen(url, timeout=10)      
-            data = json.load(resp)      
-            STOCKS = [item["symbol"] for item in data if item["symbol"].isalpha()][:MAX_STOCKS]      
+    print("Downloading stock list from Finnhub...")        
+    for attempt in range(3):        
+        try:        
+            url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_API_KEY}"        
+            resp = urlopen(url, timeout=10)        
+            data = json.load(resp)        
+            STOCKS = [item["symbol"] for item in data if item["symbol"].isalpha()][:MAX_STOCKS]        
 
-            with open(cache_file, "w") as f:      
-                json.dump(STOCKS, f)      
+            with open(cache_file, "w") as f:        
+                json.dump(STOCKS, f)        
 
-            print("Loaded", len(STOCKS), "stocks from Finnhub")      
-            return      
-        except Exception as e:      
-            print(f"Attempt {attempt+1} failed to load stock list from Finnhub: {e}")      
-            time.sleep(2 ** attempt)      
+            print("Loaded", len(STOCKS), "stocks from Finnhub")        
+            return        
+        except Exception as e:        
+            print(f"Attempt {attempt+1} failed to load stock list from Finnhub: {e}")        
+            time.sleep(2 ** attempt)        
 
-    print("Finnhub failed, trying Twelve Data...")      
-    for attempt in range(3):      
-        try:      
-            url = f"https://api.twelvedata.com/stocks?exchange=NYSE&apikey={TWELVE_API_KEY}"      
-            resp = urlopen(url, timeout=10)      
-            data = json.load(resp)      
-            STOCKS = [item["symbol"] for item in data.get("data", []) if item.get("symbol")][:MAX_STOCKS]      
+    print("Finnhub failed, trying Twelve Data...")        
+    for attempt in range(3):        
+        try:        
+            url = f"https://api.twelvedata.com/stocks?exchange=NYSE&apikey={TWELVE_API_KEY}"        
+            resp = urlopen(url, timeout=10)        
+            data = json.load(resp)        
+            STOCKS = [item["symbol"] for item in data.get("data", []) if item.get("symbol")][:MAX_STOCKS]        
 
-            if STOCKS:      
-                with open(cache_file, "w") as f:      
-                    json.dump(STOCKS, f)      
-                print("Loaded", len(STOCKS), "stocks from Twelve Data")      
-                return      
-        except Exception as e:      
-            print(f"Twelve Data attempt {attempt+1} failed: {e}")      
-            time.sleep(2 ** attempt)      
+            if STOCKS:        
+                with open(cache_file, "w") as f:        
+                    json.dump(STOCKS, f)        
+                print("Loaded", len(STOCKS), "stocks from Twelve Data")        
+                return        
+        except Exception as e:        
+            print(f"Twelve Data attempt {attempt+1} failed: {e}")        
+            time.sleep(2 ** attempt)        
 
-    print("Both APIs failed, using static fallback")      
+    print("Both APIs failed, using static fallback")        
     STOCKS = static_fallback_stocks
 
-# =========================
-# FETCH STOCK PRICE (FAST)
-# =========================
+=========================
+
+FETCH STOCK PRICE (FAST)
+
+=========================
 
 def get_stock_data(symbol):
     # Try Finnhub first
@@ -177,24 +204,26 @@ def get_stock_data(symbol):
         except:
             time.sleep(2 ** attempt)
 
-    # Fallback to Twelve Data
-    for attempt in range(3):
-        try:
-            url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"
-            resp = urlopen(url, timeout=10)
-            data = json.load(resp)
-            price = data.get("close")
-            if price is None or price == 0:
-                return None
-            return float(price)
-        except:
-            time.sleep(2 ** attempt)
+    # Fallback to Twelve Data  
+    for attempt in range(3):  
+        try:  
+            url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"  
+            resp = urlopen(url, timeout=10)  
+            data = json.load(resp)  
+            price = data.get("close")  
+            if price is None or price == 0:  
+                return None  
+            return float(price)  
+        except:  
+            time.sleep(2 ** attempt)  
 
     return None
 
-# =========================
-# FETCH VOLUME FROM ALPHA VANTAGE
-# =========================
+=========================
+
+FETCH VOLUME FROM ALPHA VANTAGE
+
+=========================
 
 last_alpha_call = 0
 
@@ -206,179 +235,294 @@ def get_stock_volume(symbol):
         if now - last_alpha_call < 12:
             time.sleep(12 - (now - last_alpha_call))
 
-        last_alpha_call = time.time()      
-        try:      
-            url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"      
-            resp = urlopen(url, timeout=10)      
-            data = json.load(resp)      
-            volume = data.get("Global Quote", {}).get("06. volume")      
-            if volume:      
-                return int(volume)      
-        except:      
-            pass
+        last_alpha_call = time.time()        
+        try:        
+            url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"        
+            resp = urlopen(url, timeout=10)        
+            data = json.load(resp)        
+            volume = data.get("Global Quote", {}).get("06. volume")        
+            if volume:        
+                return int(volume)        
+        except:        
+            pass  
 
-    # Fallback to Twelve Data
-    for attempt in range(3):
-        try:
-            url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"
-            resp = urlopen(url, timeout=10)
-            data = json.load(resp)
-            volume = data.get("volume")
-            if volume is not None:
-                return int(volume)
-        except:
-            time.sleep(2 ** attempt)
+    # Fallback to Twelve Data  
+    for attempt in range(3):  
+        try:  
+            url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"  
+            resp = urlopen(url, timeout=10)  
+            data = json.load(resp)  
+            volume = data.get("volume")  
+            if volume is not None:  
+                return int(volume)  
+        except:  
+            time.sleep(2 ** attempt)  
 
     return 0
 
-# =========================
-# FETCH COMMODITY DATA
-# =========================
+=========================
+
+FETCH COMMODITY DATA (with fallback)
+
+=========================
 
 def get_commodity_data(symbols_batch):
-    symbols_str = ",".join(symbols_batch)
-    for attempt in range(3):
-        try:
-            url = f"https://api.commoditypriceapi.com/v2/rates/latest?symbols={symbols_str}"
-            req = Request(url, headers={"x-api-key": COMMODITY_API_KEY})
-            resp = urlopen(req, timeout=10)
-            data = json.load(resp)
-            rates = data.get("rates", {})
-            result = {}
-            for sym in symbols_batch:
-                price = rates.get(sym)
-                if price is not None:
-                    result[sym] = float(price)
+    # First try CommodityPriceAPI
+    try:
+        symbols_str = ",".join(symbols_batch)
+        url = f"https://api.commoditypriceapi.com/v2/rates/latest?symbols={symbols_str}"
+        req = Request(url, headers={"x-api-key": COMMODITY_API_KEY})
+        resp = urlopen(req, timeout=10)
+        data = json.load(resp)
+        rates = data.get("rates", {})
+        result = {}
+        for sym in symbols_batch:
+            price = rates.get(sym)
+            if price is not None:
+                result[sym] = float(price)
+        if result:
             return result
-        except:
-            time.sleep(2 ** attempt)
-    return {}
+    except Exception as e:
+        print(f"CommodityPriceAPI failed: {e}")
 
-# =========================
-# PROCESS SYMBOL
-# =========================
+    # Fallback to OilPriceAPI  
+    try:  
+        url = "https://api.oilpriceapi.com/v1/prices/latest"  
+        req = Request(url, headers={"x-api-key": OILPRICE_API_KEY})  
+        resp = urlopen(req, timeout=10)  
+        data = json.load(resp)  
+        # OilPriceAPI returns a list under "data" or "prices"  
+        prices = data.get("data", data.get("prices", []))  
+        if not prices:  
+            return {}  
+        # Map our symbols to the API's codes  
+        mapping = {"WTIOIL-FUT": "WTI"}  # Add more if needed  
+        result = {}  
+        for sym in symbols_batch:  
+            api_code = mapping.get(sym)  
+            if api_code:  
+                for item in prices:  
+                    code = item.get("code") or item.get("symbol")  
+                    if code == api_code:  
+                        price = item.get("price")  
+                        if price:  
+                            result[sym] = float(price)  
+                            break  
+        return result  
+    except Exception as e:  
+        print(f"OilPriceAPI fallback failed: {e}")  
+        return {}
+
+=========================
+
+FETCH FOREX DATA (with fallback)
+
+=========================
+
+def get_forex_data(symbols_batch):
+    # First try Fixer.io
+    try:
+        # Collect all distinct currencies from the pairs
+        currencies = set()
+        for pair in symbols_batch:
+            base, quote = pair.split("/")
+            currencies.add(base)
+            currencies.add(quote)
+        currencies = list(currencies)
+
+        # Build URL for Fixer (free tier uses EUR base)
+        url = f"http://data.fixer.io/api/latest?access_key={FIXER_API_KEY}&symbols={','.join(currencies)}"
+        resp = urlopen(url, timeout=10)
+        data = json.load(resp)
+
+        if data.get("success") and "rates" in data:
+            rates = data["rates"]
+            result = {}
+            for pair in symbols_batch:
+                base, quote = pair.split("/")
+                # rate = rate_eur_quote / rate_eur_base
+                rate_eur_base = rates.get(base)
+                rate_eur_quote = rates.get(quote)
+                if rate_eur_base and rate_eur_quote:
+                    price = rate_eur_quote / rate_eur_base
+                    result[pair] = price
+            if result:
+                return result
+    except Exception as e:
+        print(f"Fixer.io failed: {e}")
+
+    # Fallback to Twelve Data
+    result = {}
+    for pair in symbols_batch:
+        try:
+            url = f"https://api.twelvedata.com/quote?symbol={pair}&apikey={TWELVE_API_KEY}"
+            resp = urlopen(url, timeout=10)
+            data = json.load(resp)
+            price = data.get("close")
+            if price is not None:
+                result[pair] = float(price)
+            time.sleep(1)  # basic rate limiting
+        except Exception as e:
+            print(f"Twelve Data forex fallback failed for {pair}: {e}")
+    return result
+
+=========================
+
+PROCESS SYMBOL
+
+=========================
 
 def process_symbol(symbol, price):
     if not price:
         return
 
-    now = int(time.time())      
+    now = int(time.time())        
 
-    cursor.execute(      
-        "SELECT alerted, baseline_price, baseline_volume, last_alert FROM assets WHERE symbol=?",      
-        (symbol,)      
-    )      
+    cursor.execute(        
+        "SELECT alerted, baseline_price, baseline_volume, last_alert FROM assets WHERE symbol=?",        
+        (symbol,)        
+    )        
 
-    row = cursor.fetchone()      
-    first_scan = row is None  
-    alerted, baseline_price, baseline_volume, last_alert = (0, price, 0, 0) if first_scan else row      
+    row = cursor.fetchone()        
+    first_scan = row is None    
+    alerted, baseline_price, baseline_volume, last_alert = (0, price, 0, 0) if first_scan else row        
 
-    # reset alert after cooldown  
-    if alerted == 1 and last_alert and (now - last_alert) >= COOLDOWN:      
-        cursor.execute("UPDATE assets SET alerted=0 WHERE symbol=?", (symbol,))      
-        conn.commit()      
-        alerted = 0      
+    # reset alert after cooldown    
+    if alerted == 1 and last_alert and (now - last_alert) >= COOLDOWN:        
+        cursor.execute("UPDATE assets SET alerted=0 WHERE symbol=?", (symbol,))        
+        conn.commit()        
+        alerted = 0        
 
-    if last_alert and (now - last_alert) < COOLDOWN:      
-        return      
+    if last_alert and (now - last_alert) < COOLDOWN:        
+        return        
 
-    # Skip alerts and volume checks on first scan  
-    if first_scan:  
-        cursor.execute(  
-            "INSERT OR REPLACE INTO assets (symbol, baseline_price, baseline_volume) VALUES (?, ?, ?)",  
-            (symbol, price, 0)  
-        )  
-        conn.commit()  
-        return  
+    # Skip alerts and volume checks on first scan    
+    if first_scan:    
+        cursor.execute(    
+            "INSERT OR REPLACE INTO assets (symbol, baseline_price, baseline_volume) VALUES (?, ?, ?)",    
+            (symbol, price, 0)    
+        )    
+        conn.commit()    
+        return    
 
-    price_growth = ((price - baseline_price) / baseline_price) * 100      
+    price_growth = ((price - baseline_price) / baseline_price) * 100        
 
-    chart = f"https://www.tradingview.com/symbols/{symbol}/"      
+    chart = f"https://www.tradingview.com/symbols/{symbol}/"        
 
-    if symbol in COMMODITIES:      
+    if symbol in COMMODITIES:        
 
-        if symbol == "XAU":      
-            chart = "https://www.investing.com/commodities/gold"      
-        elif symbol == "XAG":      
-            chart = "https://www.investing.com/commodities/silver"      
-        elif symbol == "WTIOIL-FUT":      
-            chart = "https://www.investing.com/commodities/crude-oil"      
+        if symbol == "XAU":        
+            chart = "https://www.investing.com/commodities/gold"        
+        elif symbol == "XAG":        
+            chart = "https://www.investing.com/commodities/silver"        
+        elif symbol == "WTIOIL-FUT":        
+            chart = "https://www.investing.com/commodities/crude-oil"        
 
-        if price_growth >= PRICE_SPIKE_PERCENT:      
-            message = (      
-                f"⛏️ COMMODITY SPIKE ALERT\n\n"      
-                f"Asset: {symbol}\n"      
-                f"Price: ${price:.2f}\n"      
-                f"Change: {price_growth:+.2f}%\n"      
-                f"――――――――――――――――――\n\n"      
-                f"Chart: {chart}"      
-            )      
+        if price_growth >= PRICE_SPIKE_PERCENT:        
+            message = (        
+                f"⛏️ COMMODITY SPIKE ALERT\n\n"        
+                f"Asset: {symbol}\n"        
+                f"Price: ${price:.2f}\n"        
+                f"Change: {price_growth:+.2f}%\n"        
+                f"――――――――――――――――――\n\n"        
+                f"Chart: {chart}"        
+            )        
 
-        elif price_growth <= PRICE_DROP_PERCENT:      
-            message = (      
-                f"⚠️ COMMODITY DROP ALERT\n\n"      
-                f"Asset: {symbol}\n"      
-                f"Price: ${price:.2f}\n"      
-                f"Change: {price_growth:+.2f}%\n"      
-                f"――――――――――――――――――\n\n"      
-                f"Chart: {chart}"      
-            )      
-        else:      
-            return      
+        elif price_growth <= PRICE_DROP_PERCENT:        
+            message = (        
+                f"⚠️ COMMODITY DROP ALERT\n\n"        
+                f"Asset: {symbol}\n"        
+                f"Price: ${price:.2f}\n"        
+                f"Change: {price_growth:+.2f}%\n"        
+                f"――――――――――――――――――\n\n"        
+                f"Chart: {chart}"        
+            )        
+        else:        
+            return        
 
-        volume = 0      
+        volume = 0        
 
-    else:      
+    elif symbol in CURRENCIES:                                     # Added – currency branch
+        # Build a chart URL for currencies
+        chart = f"https://www.tradingview.com/symbols/{symbol.replace('/', '')}/"
 
-        if price_growth < PRICE_SPIKE_PERCENT and price_growth > PRICE_DROP_PERCENT:      
-            return      
+        if price_growth >= PRICE_SPIKE_PERCENT:        
+            message = (        
+                f"💱 CURRENCY SPIKE ALERT\n\n"        
+                f"Pair: {symbol}\n"        
+                f"Rate: {price:.4f}\n"        
+                f"Change: {price_growth:+.2f}%\n"        
+                f"――――――――――――――――――\n\n"        
+                f"Chart: {chart}"        
+            )        
 
-        volume = get_stock_volume(symbol)      
+        elif price_growth <= PRICE_DROP_PERCENT:        
+            message = (        
+                f"⚠️ CURRENCY DROP ALERT\n\n"        
+                f"Pair: {symbol}\n"        
+                f"Rate: {price:.4f}\n"        
+                f"Change: {price_growth:+.2f}%\n"        
+                f"――――――――――――――――――\n\n"        
+                f"Chart: {chart}"        
+            )        
+        else:        
+            return        
 
-        if volume < MIN_VOLUME:      
-            return      
+        volume = 0
 
-        avg_daily_value = price * volume      
+    else:        
 
-        if avg_daily_value < MIN_DAILY_VALUE:      
-            return      
+        if price_growth < PRICE_SPIKE_PERCENT and price_growth > PRICE_DROP_PERCENT:        
+            return        
 
-        if price_growth >= PRICE_SPIKE_PERCENT:      
-            message = (      
-                f"📈 STOCK SPIKE ALERT\n\n"      
-                f"Symbol: {symbol}\n"      
-                f"Price: ${price:.2f}\n"      
-                f"Change: {price_growth:+.2f}%\n"      
-                f"Volume: {volume:,}\n"      
-                f"――――――――――――――――――\n\n"      
-                f"Chart: {chart}"      
-            )      
+        volume = get_stock_volume(symbol)        
 
-        else:      
-            message = (      
-                f"📉 STOCK DROP ALERT\n\n"      
-                f"Symbol: {symbol}\n"      
-                f"Price: ${price:.2f}\n"      
-                f"Change: {price_growth:+.2f}%\n"      
-                f"Volume: {volume:,}\n"      
-                f"――――――――――――――――――\n\n"      
-                f"Chart: {chart}"      
-            )      
+        if volume < MIN_VOLUME:        
+            return        
 
-    cursor.execute(      
-        "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",      
-        (price, volume, now, symbol)      
-    )      
-    conn.commit()      
+        avg_daily_value = price * volume        
 
-    alerts_state[symbol] = now      
-    save_alerts_state()      
+        if avg_daily_value < MIN_DAILY_VALUE:        
+            return        
+
+        if price_growth >= PRICE_SPIKE_PERCENT:        
+            message = (        
+                f"📈 STOCK SPIKE ALERT\n\n"        
+                f"Symbol: {symbol}\n"        
+                f"Price: ${price:.2f}\n"        
+                f"Change: {price_growth:+.2f}%\n"        
+                f"Volume: {volume:,}\n"        
+                f"――――――――――――――――――\n\n"        
+                f"Chart: {chart}"        
+            )        
+
+        else:        
+            message = (        
+                f"📉 STOCK DROP ALERT\n\n"        
+                f"Symbol: {symbol}\n"        
+                f"Price: ${price:.2f}\n"        
+                f"Change: {price_growth:+.2f}%\n"        
+                f"Volume: {volume:,}\n"        
+                f"――――――――――――――――――\n\n"        
+                f"Chart: {chart}"        
+            )        
+
+    cursor.execute(        
+        "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",        
+        (price, volume, now, symbol)        
+    )        
+    conn.commit()        
+
+    alerts_state[symbol] = now        
+    save_alerts_state()        
 
     send_telegram(message)
 
-# =========================
-# SCAN STOCKS
-# =========================
+=========================
+
+SCAN STOCKS
+
+=========================
 
 def scan_stocks():
     print("Scanning liquid stocks...")
@@ -391,9 +535,11 @@ def scan_stocks():
             process_symbol(symbol, price)
             time.sleep(1)
 
-# =========================
-# SCAN COMMODITIES
-# =========================
+=========================
+
+SCAN COMMODITIES
+
+=========================
 
 def scan_commodities():
     print("Scanning commodities...")
@@ -404,20 +550,38 @@ def scan_commodities():
             process_symbol(symbol, price)
             time.sleep(1)
 
-# =========================
-# MAIN LOOP
-# =========================
+=========================
+
+SCAN CURRENCIES                                           # Added
+
+=========================
+
+def scan_currencies():
+    print("Scanning currencies...")
+    for i in range(0, len(CURRENCIES), BATCH_SIZE):
+        batch = CURRENCIES[i:i+BATCH_SIZE]
+        data = get_forex_data(batch)
+        for symbol, price in data.items():
+            process_symbol(symbol, price)
+            time.sleep(1)
+
+=========================
+
+MAIN LOOP
+
+=========================
 
 def main():
     print("Starting Liquid Market Scanner")
     load_stock_list()
     send_telegram(
-        f"Market scanner started\nStocks loaded: {len(STOCKS)}\nCommodities: {', '.join(COMMODITIES)}\n\nALERTS COMING SOON 💎"
+        f"Market scanner started\nStocks loaded: {len(STOCKS)}\nCommodities: {', '.join(COMMODITIES)}\nCurrencies: {', '.join(CURRENCIES)}\n\nALERTS COMING SOON 💎"
     )
     while True:
         try:
             scan_stocks()
             scan_commodities()
+            scan_currencies()              # Added
             print("Sleeping...\n")
             time.sleep(CHECK_INTERVAL)
         except:
