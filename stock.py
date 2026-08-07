@@ -16,16 +16,22 @@ TWELVE_API_KEY = "536665a15d214e48a622c80eff1bfa88"
 COMMODITY_API_KEY = "81b66f88-22a3-4317-aff7-40d3ee221c70"
 ALPHA_VANTAGE_KEY = "2HUZXG0RQSLXVQSZ"
 OILPRICE_API_KEY = "71a7c209df5f57d072367f4a09d9985ebcc5e3ed2bbe52e687c007dd23926d6c"
-FIXER_API_KEY = "70820ab44387be352ff27fed8e85116d"          # Added
+FIXER_API_KEY = "70820ab44387be352ff27fed8e85116d"
 
 TELEGRAM_BOT_TOKEN = "8537126256:AAFrwFUTmSatD3VUORG44RcBPtiNjUK0P3w"
 TELEGRAM_CHAT_IDS = [-1003753296608, 7198809557]
 
+# Normal thresholds
 PRICE_SPIKE_PERCENT = 1.0
 PRICE_DROP_PERCENT = -1.0
-
-FOREX_SPIKE = 0.2          # Added – separate forex thresholds
+FOREX_SPIKE = 0.2
 FOREX_DROP = -0.2
+
+# Watchlist gets more sensitive thresholds (priority)
+WATCHLIST_SPIKE = 0.5
+WATCHLIST_DROP = -0.5
+WATCHLIST_FOREX_SPIKE = 0.1
+WATCHLIST_FOREX_DROP = -0.1
 
 MIN_VOLUME = 500_000
 MIN_DAILY_VALUE = 3_000_000
@@ -42,7 +48,7 @@ COMMODITIES = [
     "WTIOIL-FUT"
 ]
 
-CURRENCIES = [                      # Added – list of forex pairs
+CURRENCIES = [
     "EUR/USD",
     "GBP/USD",
     "USD/JPY",
@@ -63,7 +69,7 @@ ALERTS_STATE_FILE = "alerts_state.json"
 # DATABASE
 # =========================
 
-conn = sqlite3.connect("market.db")
+conn = sqlite3.connect("market.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -73,6 +79,13 @@ CREATE TABLE IF NOT EXISTS assets (
     baseline_price REAL DEFAULT 0,
     baseline_volume REAL DEFAULT 0,
     last_alert INTEGER DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS watchlist (
+    symbol TEXT PRIMARY KEY,
+    added_at INTEGER
 )
 """)
 
@@ -99,18 +112,189 @@ def save_alerts_state():
         print("Failed to save alerts state:", e)
 
 # =========================
+# WATCHLIST HELPERS
+# =========================
+
+def normalize_symbol(symbol: str) -> str:
+    return symbol.strip().upper()
+
+def is_watched(symbol: str) -> bool:
+    cursor.execute("SELECT 1 FROM watchlist WHERE symbol=?", (normalize_symbol(symbol),))
+    return cursor.fetchone() is not None
+
+def get_watchlist() -> list:
+    cursor.execute("SELECT symbol FROM watchlist ORDER BY added_at")
+    return [row[0] for row in cursor.fetchall()]
+
+def add_to_watchlist(symbol: str) -> bool:
+    symbol = normalize_symbol(symbol)
+    if not symbol:
+        return False
+    try:
+        cursor.execute(
+            "INSERT OR IGNORE INTO watchlist (symbol, added_at) VALUES (?, ?)",
+            (symbol, int(time.time()))
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except:
+        return False
+
+def remove_from_watchlist(symbol: str) -> bool:
+    symbol = normalize_symbol(symbol)
+    cursor.execute("DELETE FROM watchlist WHERE symbol=?", (symbol,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+# =========================
 # TELEGRAM
 # =========================
 
-def send_telegram(message):
-    for chat_id in TELEGRAM_CHAT_IDS:
+def send_telegram(message, reply_markup=None, chat_ids=None):
+    targets = chat_ids if chat_ids else TELEGRAM_CHAT_IDS
+    for chat_id in targets:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = json.dumps({"chat_id": chat_id, "text": message}).encode("utf-8")
-            req = Request(url, data=payload, headers={"Content-Type": "application/json"})
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+            data = json.dumps(payload).encode("utf-8")
+            req = Request(url, data=data, headers={"Content-Type": "application/json"})
             urlopen(req, timeout=10)
         except Exception as e:
             print("Telegram error:", e)
+
+def answer_callback(callback_query_id, text=None):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        data = json.dumps(payload).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/json"})
+        urlopen(req, timeout=5)
+    except Exception as e:
+        print("answerCallbackQuery error:", e)
+
+def build_watchlist_keyboard(symbols: list):
+    """Inline keyboard with Unwatch buttons"""
+    keyboard = []
+    row = []
+    for i, sym in enumerate(symbols):
+        row.append({"text": f"❌ {sym}", "callback_data": f"unwatch:{sym}"})
+        if len(row) == 2 or i == len(symbols) - 1:
+            keyboard.append(row)
+            row = []
+    if not symbols:
+        keyboard = [[{"text": "Watchlist is empty", "callback_data": "noop"}]]
+    return {"inline_keyboard": keyboard}
+
+# =========================
+# TELEGRAM COMMAND HANDLER
+# =========================
+
+last_update_id = 0
+
+def handle_telegram_updates():
+    global last_update_id
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=5"
+        resp = urlopen(url, timeout=10)
+        data = json.load(resp)
+        if not data.get("ok"):
+            return
+
+        for update in data.get("result", []):
+            last_update_id = update["update_id"]
+
+            # ---- Callback queries (inline buttons) ----
+            if "callback_query" in update:
+                cq = update["callback_query"]
+                data_str = cq.get("data", "")
+                chat_id = cq["message"]["chat"]["id"]
+                cq_id = cq["id"]
+
+                if data_str.startswith("unwatch:"):
+                    symbol = data_str.split(":", 1)[1]
+                    if remove_from_watchlist(symbol):
+                        answer_callback(cq_id, f"Removed {symbol}")
+                        # Refresh the message
+                        wl = get_watchlist()
+                        text = "⭐ <b>Your Watchlist</b>\n\n" + ("\n".join(f"• {s}" for s in wl) if wl else "Empty")
+                        send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
+                    else:
+                        answer_callback(cq_id, "Not found")
+                elif data_str.startswith("watch:"):
+                    symbol = data_str.split(":", 1)[1]
+                    if add_to_watchlist(symbol):
+                        answer_callback(cq_id, f"Added {symbol} ⭐")
+                    else:
+                        answer_callback(cq_id, "Already on watchlist")
+                else:
+                    answer_callback(cq_id)
+                continue
+
+            # ---- Regular messages / commands ----
+            message = update.get("message")
+            if not message:
+                continue
+
+            text = (message.get("text") or "").strip()
+            chat_id = message["chat"]["id"]
+
+            if not text.startswith("/"):
+                continue
+
+            parts = text.split(maxsplit=1)
+            cmd = parts[0].lower().split("@")[0]   # remove @BotName if present
+            arg = parts[1].strip() if len(parts) > 1 else ""
+
+            if cmd in ("/start", "/help"):
+                help_text = (
+                    "🤖 <b>Market Scanner Bot</b>\n\n"
+                    "<b>Commands:</b>\n"
+                    "/watch SYMBOL – Add to watchlist (priority alerts)\n"
+                    "/unwatch SYMBOL – Remove from watchlist\n"
+                    "/watchlist – Show current watchlist\n"
+                    "/help – This message\n\n"
+                    "Watchlist symbols are scanned first and use tighter thresholds."
+                )
+                send_telegram(help_text, chat_ids=[chat_id])
+
+            elif cmd == "/watch":
+                if not arg:
+                    send_telegram("Usage: /watch AAPL  or  /watch EUR/USD", chat_ids=[chat_id])
+                    continue
+                symbol = normalize_symbol(arg)
+                if add_to_watchlist(symbol):
+                    send_telegram(f"✅ Added <b>{symbol}</b> to watchlist ⭐", chat_ids=[chat_id])
+                else:
+                    send_telegram(f"{symbol} is already on the watchlist.", chat_ids=[chat_id])
+
+            elif cmd == "/unwatch":
+                if not arg:
+                    send_telegram("Usage: /unwatch AAPL", chat_ids=[chat_id])
+                    continue
+                symbol = normalize_symbol(arg)
+                if remove_from_watchlist(symbol):
+                    send_telegram(f"🗑 Removed <b>{symbol}</b> from watchlist", chat_ids=[chat_id])
+                else:
+                    send_telegram(f"{symbol} was not on the watchlist.", chat_ids=[chat_id])
+
+            elif cmd == "/watchlist":
+                wl = get_watchlist()
+                if not wl:
+                    send_telegram("⭐ Watchlist is empty.\nUse /watch SYMBOL to add one.", chat_ids=[chat_id])
+                else:
+                    text = "⭐ <b>Your Watchlist</b>\n\n" + "\n".join(f"• {s}" for s in wl)
+                    send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
+
+    except Exception as e:
+        print("Telegram update error:", e)
 
 # =========================
 # LOAD STOCK LIST WITH CACHE + FALLBACKS
@@ -182,7 +366,6 @@ def load_stock_list():
 # =========================
 
 def get_stock_data(symbol):
-    # Try Finnhub first
     for attempt in range(3):
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
@@ -195,7 +378,6 @@ def get_stock_data(symbol):
         except:
             time.sleep(2 ** attempt)
 
-    # Fallback to Twelve Data
     for attempt in range(3):
         try:
             url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"
@@ -218,7 +400,6 @@ last_alpha_call = 0
 
 def get_stock_volume(symbol):
     global last_alpha_call
-    # Try Alpha Vantage first
     for attempt in range(3):
         now = time.time()
         if now - last_alpha_call < 12:
@@ -235,7 +416,6 @@ def get_stock_volume(symbol):
         except:
             pass
 
-    # Fallback to Twelve Data
     for attempt in range(3):
         try:
             url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"
@@ -250,12 +430,11 @@ def get_stock_volume(symbol):
     return 0
 
 # =========================
-# FETCH COMMODITY DATA (with fallback)
+# FETCH COMMODITY DATA
 # =========================
 
 def get_commodity_data(symbols_batch):
     result = {}
-    # First try Twelve Data for each symbol
     for symbol in symbols_batch:
         try:
             url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_API_KEY}"
@@ -269,9 +448,8 @@ def get_commodity_data(symbols_batch):
         except Exception as e:
             print(f"Twelve Data commodity failed for {symbol}: {e}")
             result[symbol] = None
-        time.sleep(1)  # rate limit
+        time.sleep(1)
 
-    # If any symbol failed, fallback to OilPriceAPI for those
     failed = [sym for sym, val in result.items() if val is None]
     if failed:
         try:
@@ -281,7 +459,7 @@ def get_commodity_data(symbols_batch):
             data = json.load(resp)
             prices = data.get("data", data.get("prices", []))
             if prices:
-                mapping = {"WTIOIL-FUT": "WTI"}  # extend as needed
+                mapping = {"WTIOIL-FUT": "WTI"}
                 for sym in failed:
                     api_code = mapping.get(sym)
                     if api_code:
@@ -292,22 +470,17 @@ def get_commodity_data(symbols_batch):
                                 if price:
                                     result[sym] = float(price)
                                     break
-            else:
-                print("OilPriceAPI returned no prices")
         except Exception as e:
             print(f"OilPriceAPI fallback failed: {e}")
 
-    # Remove None entries
     return {sym: price for sym, price in result.items() if price is not None}
 
 # =========================
-# FETCH FOREX DATA (with fallback)
+# FETCH FOREX DATA
 # =========================
 
 def get_forex_data(symbols_batch):
-    # First try Fixer.io
     try:
-        # Collect all distinct currencies from the pairs
         currencies = set()
         for pair in symbols_batch:
             base, quote = pair.split("/")
@@ -315,7 +488,6 @@ def get_forex_data(symbols_batch):
             currencies.add(quote)
         currencies = list(currencies)
 
-        # Build URL for Fixer (free tier uses EUR base)
         url = f"http://data.fixer.io/api/latest?access_key={FIXER_API_KEY}&symbols={','.join(currencies)}"
         resp = urlopen(url, timeout=10)
         data = json.load(resp)
@@ -325,7 +497,6 @@ def get_forex_data(symbols_batch):
             result = {}
             for pair in symbols_batch:
                 base, quote = pair.split("/")
-                # rate = rate_eur_quote / rate_eur_base
                 rate_eur_base = rates.get(base)
                 rate_eur_quote = rates.get(quote)
                 if rate_eur_base and rate_eur_quote:
@@ -336,7 +507,6 @@ def get_forex_data(symbols_batch):
     except Exception as e:
         print(f"Fixer.io failed: {e}")
 
-    # Fallback to Twelve Data
     result = {}
     for pair in symbols_batch:
         try:
@@ -346,13 +516,13 @@ def get_forex_data(symbols_batch):
             price = data.get("close")
             if price is not None:
                 result[pair] = float(price)
-            time.sleep(1)  # basic rate limiting
+            time.sleep(1)
         except Exception as e:
             print(f"Twelve Data forex fallback failed for {pair}: {e}")
     return result
 
 # =========================
-# PROCESS SYMBOL
+# PROCESS SYMBOL (with watchlist priority)
 # =========================
 
 def process_symbol(symbol, price):
@@ -360,6 +530,7 @@ def process_symbol(symbol, price):
         return
 
     now = int(time.time())
+    watched = is_watched(symbol)
 
     cursor.execute(
         "SELECT alerted, baseline_price, baseline_volume, last_alert FROM assets WHERE symbol=?",
@@ -370,7 +541,6 @@ def process_symbol(symbol, price):
     first_scan = row is None
     alerted, baseline_price, baseline_volume, last_alert = (0, price, 0, 0) if first_scan else row
 
-    # reset alert after cooldown
     if alerted == 1 and last_alert and (now - last_alert) >= COOLDOWN:
         cursor.execute("UPDATE assets SET alerted=0 WHERE symbol=?", (symbol,))
         conn.commit()
@@ -379,7 +549,6 @@ def process_symbol(symbol, price):
     if last_alert and (now - last_alert) < COOLDOWN:
         return
 
-    # Skip alerts and volume checks on first scan
     if first_scan:
         cursor.execute(
             "INSERT OR REPLACE INTO assets (symbol, baseline_price, baseline_volume) VALUES (?, ?, ?)",
@@ -392,8 +561,17 @@ def process_symbol(symbol, price):
 
     chart = f"https://www.tradingview.com/symbols/{symbol}/"
 
-    if symbol in COMMODITIES:
+    # Decide thresholds based on watchlist
+    if watched:
+        spike_th = WATCHLIST_SPIKE if symbol not in CURRENCIES else WATCHLIST_FOREX_SPIKE
+        drop_th  = WATCHLIST_DROP  if symbol not in CURRENCIES else WATCHLIST_FOREX_DROP
+        prefix = "⭐ WATCHLIST "
+    else:
+        spike_th = PRICE_SPIKE_PERCENT if symbol not in CURRENCIES else FOREX_SPIKE
+        drop_th  = PRICE_DROP_PERCENT  if symbol not in CURRENCIES else FOREX_DROP
+        prefix = ""
 
+    if symbol in COMMODITIES:
         if symbol == "XAU":
             chart = "https://www.investing.com/commodities/gold"
         elif symbol == "XAG":
@@ -401,19 +579,18 @@ def process_symbol(symbol, price):
         elif symbol == "WTIOIL-FUT":
             chart = "https://www.investing.com/commodities/crude-oil"
 
-        if price_growth >= PRICE_SPIKE_PERCENT:
+        if price_growth >= spike_th:
             message = (
-                f"⛏️ COMMODITY SPIKE ALERT\n\n"
+                f"{prefix}⛏️ COMMODITY SPIKE ALERT\n\n"
                 f"Asset: {symbol}\n"
                 f"Price: ${price:.2f}\n"
                 f"Change: {price_growth:+.2f}%\n"
                 f"――――――――――――――――――\n\n"
                 f"Chart: {chart}"
             )
-
-        elif price_growth <= PRICE_DROP_PERCENT:
+        elif price_growth <= drop_th:
             message = (
-                f"⚠️ COMMODITY DROP ALERT\n\n"
+                f"{prefix}⚠️ COMMODITY DROP ALERT\n\n"
                 f"Asset: {symbol}\n"
                 f"Price: ${price:.2f}\n"
                 f"Change: {price_growth:+.2f}%\n"
@@ -422,26 +599,23 @@ def process_symbol(symbol, price):
             )
         else:
             return
-
         volume = 0
 
-    elif symbol in CURRENCIES:                                     # Added – currency branch
-        # Build a chart URL for currencies
+    elif symbol in CURRENCIES:
         chart = f"https://www.tradingview.com/symbols/{symbol.replace('/', '')}/"
 
-        if price_growth >= FOREX_SPIKE:
+        if price_growth >= spike_th:
             message = (
-                f"💱 CURRENCY SPIKE ALERT\n\n"
+                f"{prefix}💱 CURRENCY SPIKE ALERT\n\n"
                 f"Pair: {symbol}\n"
                 f"Rate: {price:.4f}\n"
                 f"Change: {price_growth:+.2f}%\n"
                 f"――――――――――――――――――\n\n"
                 f"Chart: {chart}"
             )
-
-        elif price_growth <= FOREX_DROP:
+        elif price_growth <= drop_th:
             message = (
-                f"⚠️ CURRENCY DROP ALERT\n\n"
+                f"{prefix}⚠️ CURRENCY DROP ALERT\n\n"
                 f"Pair: {symbol}\n"
                 f"Rate: {price:.4f}\n"
                 f"Change: {price_growth:+.2f}%\n"
@@ -450,12 +624,10 @@ def process_symbol(symbol, price):
             )
         else:
             return
-
         volume = 0
 
-    else:
-
-        if price_growth < PRICE_SPIKE_PERCENT and price_growth > PRICE_DROP_PERCENT:
+    else:  # Stocks
+        if price_growth < spike_th and price_growth > drop_th:
             return
 
         volume = get_stock_volume(symbol)
@@ -464,13 +636,22 @@ def process_symbol(symbol, price):
             return
 
         avg_daily_value = price * volume
-
         if avg_daily_value < MIN_DAILY_VALUE:
             return
 
-        if price_growth >= PRICE_SPIKE_PERCENT:
+        if price_growth >= spike_th:
             message = (
-                f"📈 STOCK SPIKE ALERT\n\n"
+                f"{prefix}📈 STOCK SPIKE ALERT\n\n"
+                f"Symbol: {symbol}\n"
+                f"Price: ${price:.2f}\n"
+                f"Change: {price_growth:+.2f}%\n"
+                f"Volume: {volume:,}\n"
+                f"――――――――――――――――――\n\n"
+                f"Chart: {chart}"
+            )
+        else:
+            message = (
+                f"{prefix}📉 STOCK DROP ALERT\n\n"
                 f"Symbol: {symbol}\n"
                 f"Price: ${price:.2f}\n"
                 f"Change: {price_growth:+.2f}%\n"
@@ -479,16 +660,14 @@ def process_symbol(symbol, price):
                 f"Chart: {chart}"
             )
 
-        else:
-            message = (
-                f"📉 STOCK DROP ALERT\n\n"
-                f"Symbol: {symbol}\n"
-                f"Price: ${price:.2f}\n"
-                f"Change: {price_growth:+.2f}%\n"
-                f"Volume: {volume:,}\n"
-                f"――――――――――――――――――\n\n"
-                f"Chart: {chart}"
-            )
+    # Add quick "Add to watchlist" button if not already watched
+    reply_markup = None
+    if not watched:
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": f"⭐ Watch {symbol}", "callback_data": f"watch:{symbol}"}
+            ]]
+        }
 
     cursor.execute(
         "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",
@@ -499,16 +678,20 @@ def process_symbol(symbol, price):
     alerts_state[symbol] = now
     save_alerts_state()
 
-    send_telegram(message)
+    send_telegram(message, reply_markup=reply_markup)
 
 # =========================
-# SCAN STOCKS
+# SCAN FUNCTIONS (watchlist first)
 # =========================
 
 def scan_stocks():
     print("Scanning liquid stocks...")
-    for i in range(0, len(STOCKS), BATCH_SIZE):
-        batch = STOCKS[i:i+BATCH_SIZE]
+    watched = set(get_watchlist())
+    # Prioritize: watched stocks first
+    ordered = [s for s in STOCKS if s in watched] + [s for s in STOCKS if s not in watched]
+
+    for i in range(0, len(ordered), BATCH_SIZE):
+        batch = ordered[i:i+BATCH_SIZE]
         for symbol in batch:
             price = get_stock_data(symbol)
             if not price:
@@ -516,27 +699,25 @@ def scan_stocks():
             process_symbol(symbol, price)
             time.sleep(1)
 
-# =========================
-# SCAN COMMODITIES
-# =========================
-
 def scan_commodities():
     print("Scanning commodities...")
-    for i in range(0, len(COMMODITIES), BATCH_SIZE):
-        batch = COMMODITIES[i:i+BATCH_SIZE]
+    watched = set(get_watchlist())
+    ordered = [s for s in COMMODITIES if s in watched] + [s for s in COMMODITIES if s not in watched]
+
+    for i in range(0, len(ordered), BATCH_SIZE):
+        batch = ordered[i:i+BATCH_SIZE]
         data = get_commodity_data(batch)
         for symbol, price in data.items():
             process_symbol(symbol, price)
             time.sleep(1)
 
-# =========================
-# SCAN CURRENCIES                                           # Added
-# =========================
-
 def scan_currencies():
     print("Scanning currencies...")
-    for i in range(0, len(CURRENCIES), BATCH_SIZE):
-        batch = CURRENCIES[i:i+BATCH_SIZE]
+    watched = set(get_watchlist())
+    ordered = [s for s in CURRENCIES if s in watched] + [s for s in CURRENCIES if s not in watched]
+
+    for i in range(0, len(ordered), BATCH_SIZE):
+        batch = ordered[i:i+BATCH_SIZE]
         data = get_forex_data(batch)
         for symbol, price in data.items():
             process_symbol(symbol, price)
@@ -547,20 +728,42 @@ def scan_currencies():
 # =========================
 
 def main():
-    print("Starting Liquid Market Scanner")
+    print("Starting Liquid Market Scanner + Watchlist")
     load_stock_list()
+
+    wl = get_watchlist()
     send_telegram(
-        f"Market scanner started\nStocks loaded: {len(STOCKS)}\nCommodities: {', '.join(COMMODITIES)}\nCurrencies: {', '.join(CURRENCIES)}\n\nALERTS COMING SOON 💎"
+        f"🚀 Market scanner started\n"
+        f"Stocks loaded: {len(STOCKS)}\n"
+        f"Commodities: {', '.join(COMMODITIES)}\n"
+        f"Currencies: {', '.join(CURRENCIES)}\n"
+        f"Watchlist: {len(wl)} symbols\n\n"
+        f"Use /watch SYMBOL to prioritize any asset 💎"
     )
+
     while True:
         try:
+            # Handle Telegram commands / buttons frequently
+            handle_telegram_updates()
+
             scan_stocks()
+            handle_telegram_updates()          # keep responsive
+
             scan_commodities()
-            scan_currencies()              # Added
+            handle_telegram_updates()
+
+            scan_currencies()
+            handle_telegram_updates()
+
             print("Sleeping...\n")
-            time.sleep(CHECK_INTERVAL)
-        except:
+            # During sleep, keep checking for commands every few seconds
+            for _ in range(CHECK_INTERVAL // 5):
+                handle_telegram_updates()
+                time.sleep(5)
+
+        except Exception:
             traceback.print_exc()
+            time.sleep(10)
 
 if __name__ == "__main__":
     main()
