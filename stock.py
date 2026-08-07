@@ -4,6 +4,7 @@ import traceback
 import os
 import json
 import math
+import threading
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
@@ -194,107 +195,119 @@ def build_watchlist_keyboard(symbols: list):
     return {"inline_keyboard": keyboard}
 
 # =========================
-# TELEGRAM COMMAND HANDLER
+# TELEGRAM COMMAND HANDLER (background thread)
 # =========================
 
-last_update_id = 0
-
-def handle_telegram_updates():
-    global last_update_id
+def process_update(update):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=5"
-        resp = urlopen(url, timeout=10)
-        data = json.load(resp)
-        if not data.get("ok"):
+        # ---- Callback queries (inline buttons) ----
+        if "callback_query" in update:
+            cq = update["callback_query"]
+            data_str = cq.get("data", "")
+            chat_id = cq["message"]["chat"]["id"]
+            cq_id = cq["id"]
+
+            if data_str.startswith("unwatch:"):
+                symbol = data_str.split(":", 1)[1]
+                if remove_from_watchlist(symbol):
+                    answer_callback(cq_id, f"Removed {symbol}")
+                    wl = get_watchlist()
+                    text = "⭐ <b>Your Watchlist</b>\n\n" + ("\n".join(f"• {s}" for s in wl) if wl else "Empty")
+                    send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
+                else:
+                    answer_callback(cq_id, "Not found")
+            elif data_str.startswith("watch:"):
+                symbol = data_str.split(":", 1)[1]
+                if add_to_watchlist(symbol):
+                    answer_callback(cq_id, f"Added {symbol} ⭐")
+                else:
+                    answer_callback(cq_id, "Already on watchlist")
+            else:
+                answer_callback(cq_id)
             return
 
-        for update in data.get("result", []):
-            last_update_id = update["update_id"]
+        # ---- Regular messages / commands ----
+        message = update.get("message")
+        if not message:
+            return
 
-            # ---- Callback queries (inline buttons) ----
-            if "callback_query" in update:
-                cq = update["callback_query"]
-                data_str = cq.get("data", "")
-                chat_id = cq["message"]["chat"]["id"]
-                cq_id = cq["id"]
+        text = (message.get("text") or "").strip()
+        chat_id = message["chat"]["id"]
 
-                if data_str.startswith("unwatch:"):
-                    symbol = data_str.split(":", 1)[1]
-                    if remove_from_watchlist(symbol):
-                        answer_callback(cq_id, f"Removed {symbol}")
-                        # Refresh the message
-                        wl = get_watchlist()
-                        text = "⭐ <b>Your Watchlist</b>\n\n" + ("\n".join(f"• {s}" for s in wl) if wl else "Empty")
-                        send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
-                    else:
-                        answer_callback(cq_id, "Not found")
-                elif data_str.startswith("watch:"):
-                    symbol = data_str.split(":", 1)[1]
-                    if add_to_watchlist(symbol):
-                        answer_callback(cq_id, f"Added {symbol} ⭐")
-                    else:
-                        answer_callback(cq_id, "Already on watchlist")
-                else:
-                    answer_callback(cq_id)
-                continue
+        if not text.startswith("/"):
+            return
 
-            # ---- Regular messages / commands ----
-            message = update.get("message")
-            if not message:
-                continue
+        parts = text.split(maxsplit=1)
+        cmd = parts[0].lower().split("@")[0]
+        arg = parts[1].strip() if len(parts) > 1 else ""
 
-            text = (message.get("text") or "").strip()
-            chat_id = message["chat"]["id"]
+        print(f"[Telegram] Received command: {cmd} {arg} from {chat_id}")
 
-            if not text.startswith("/"):
-                continue
+        if cmd in ("/start", "/help"):
+            help_text = (
+                "🤖 <b>Market Scanner Bot</b>\n\n"
+                "<b>Commands:</b>\n"
+                "/watch SYMBOL – Add to watchlist (priority alerts)\n"
+                "/unwatch SYMBOL – Remove from watchlist\n"
+                "/watchlist – Show current watchlist\n"
+                "/help – This message\n\n"
+                "Watchlist symbols are scanned first and use tighter thresholds."
+            )
+            send_telegram(help_text, chat_ids=[chat_id])
 
-            parts = text.split(maxsplit=1)
-            cmd = parts[0].lower().split("@")[0]   # remove @BotName if present
-            arg = parts[1].strip() if len(parts) > 1 else ""
+        elif cmd == "/watch":
+            if not arg:
+                send_telegram("Usage: /watch AAPL  or  /watch EUR/USD", chat_ids=[chat_id])
+                return
+            symbol = normalize_symbol(arg)
+            if add_to_watchlist(symbol):
+                send_telegram(f"✅ Added <b>{symbol}</b> to watchlist ⭐", chat_ids=[chat_id])
+            else:
+                send_telegram(f"{symbol} is already on the watchlist.", chat_ids=[chat_id])
 
-            if cmd in ("/start", "/help"):
-                help_text = (
-                    "🤖 <b>Market Scanner Bot</b>\n\n"
-                    "<b>Commands:</b>\n"
-                    "/watch SYMBOL – Add to watchlist (priority alerts)\n"
-                    "/unwatch SYMBOL – Remove from watchlist\n"
-                    "/watchlist – Show current watchlist\n"
-                    "/help – This message\n\n"
-                    "Watchlist symbols are scanned first and use tighter thresholds."
-                )
-                send_telegram(help_text, chat_ids=[chat_id])
+        elif cmd == "/unwatch":
+            if not arg:
+                send_telegram("Usage: /unwatch AAPL", chat_ids=[chat_id])
+                return
+            symbol = normalize_symbol(arg)
+            if remove_from_watchlist(symbol):
+                send_telegram(f"🗑 Removed <b>{symbol}</b> from watchlist", chat_ids=[chat_id])
+            else:
+                send_telegram(f"{symbol} was not on the watchlist.", chat_ids=[chat_id])
 
-            elif cmd == "/watch":
-                if not arg:
-                    send_telegram("Usage: /watch AAPL  or  /watch EUR/USD", chat_ids=[chat_id])
-                    continue
-                symbol = normalize_symbol(arg)
-                if add_to_watchlist(symbol):
-                    send_telegram(f"✅ Added <b>{symbol}</b> to watchlist ⭐", chat_ids=[chat_id])
-                else:
-                    send_telegram(f"{symbol} is already on the watchlist.", chat_ids=[chat_id])
-
-            elif cmd == "/unwatch":
-                if not arg:
-                    send_telegram("Usage: /unwatch AAPL", chat_ids=[chat_id])
-                    continue
-                symbol = normalize_symbol(arg)
-                if remove_from_watchlist(symbol):
-                    send_telegram(f"🗑 Removed <b>{symbol}</b> from watchlist", chat_ids=[chat_id])
-                else:
-                    send_telegram(f"{symbol} was not on the watchlist.", chat_ids=[chat_id])
-
-            elif cmd == "/watchlist":
-                wl = get_watchlist()
-                if not wl:
-                    send_telegram("⭐ Watchlist is empty.\nUse /watch SYMBOL to add one.", chat_ids=[chat_id])
-                else:
-                    text = "⭐ <b>Your Watchlist</b>\n\n" + "\n".join(f"• {s}" for s in wl)
-                    send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
+        elif cmd == "/watchlist":
+            wl = get_watchlist()
+            if not wl:
+                send_telegram("⭐ Watchlist is empty.\nUse /watch SYMBOL to add one.", chat_ids=[chat_id])
+            else:
+                text = "⭐ <b>Your Watchlist</b>\n\n" + "\n".join(f"• {s}" for s in wl)
+                send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
 
     except Exception as e:
-        print("Telegram update error:", e)
+        print("Error processing update:", e)
+        traceback.print_exc()
+
+def telegram_polling_loop():
+    """Dedicated background thread – always listens for commands"""
+    offset = 0
+    print("Telegram polling thread started")
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+            resp = urlopen(url, timeout=35)
+            data = json.load(resp)
+
+            if not data.get("ok"):
+                time.sleep(3)
+                continue
+
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                process_update(update)
+
+        except Exception as e:
+            print("Telegram polling error:", e)
+            time.sleep(5)
 
 # =========================
 # LOAD STOCK LIST WITH CACHE + FALLBACKS
@@ -731,6 +744,10 @@ def main():
     print("Starting Liquid Market Scanner + Watchlist")
     load_stock_list()
 
+    # Start Telegram listener in background thread
+    t = threading.Thread(target=telegram_polling_loop, daemon=True)
+    t.start()
+
     wl = get_watchlist()
     send_telegram(
         f"🚀 Market scanner started\n"
@@ -743,24 +760,11 @@ def main():
 
     while True:
         try:
-            # Handle Telegram commands / buttons frequently
-            handle_telegram_updates()
-
             scan_stocks()
-            handle_telegram_updates()          # keep responsive
-
             scan_commodities()
-            handle_telegram_updates()
-
             scan_currencies()
-            handle_telegram_updates()
-
             print("Sleeping...\n")
-            # During sleep, keep checking for commands every few seconds
-            for _ in range(CHECK_INTERVAL // 5):
-                handle_telegram_updates()
-                time.sleep(5)
-
+            time.sleep(CHECK_INTERVAL)
         except Exception:
             traceback.print_exc()
             time.sleep(10)
