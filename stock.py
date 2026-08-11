@@ -90,6 +90,30 @@ CREATE TABLE IF NOT EXISTS watchlist (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS bookmarks (
+    symbol TEXT PRIMARY KEY,
+    added_at INTEGER,
+    last_price REAL,
+    last_change REAL,
+    last_direction TEXT,
+    last_alert_time INTEGER,
+    note TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS bookmark_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT,
+    alert_time INTEGER,
+    price REAL,
+    change_pct REAL,
+    direction TEXT,
+    volume REAL
+)
+""")
+
 conn.commit()
 
 # =========================
@@ -148,6 +172,111 @@ def remove_from_watchlist(symbol: str) -> bool:
     return cursor.rowcount > 0
 
 # =========================
+# BOOKMARK HELPERS
+# =========================
+
+def is_bookmarked(symbol: str) -> bool:
+    cursor.execute("SELECT 1 FROM bookmarks WHERE symbol=?", (normalize_symbol(symbol),))
+    return cursor.fetchone() is not None
+
+def get_bookmarks() -> list:
+    cursor.execute("""
+        SELECT symbol, last_price, last_change, last_direction, last_alert_time, note
+        FROM bookmarks ORDER BY added_at
+    """)
+    return cursor.fetchall()
+
+def add_to_bookmarks(symbol: str, price=None, change=None, direction=None, note=None) -> bool:
+    symbol = normalize_symbol(symbol)
+    if not symbol:
+        return False
+    try:
+        now = int(time.time())
+        cursor.execute("""
+            INSERT OR REPLACE INTO bookmarks
+            (symbol, added_at, last_price, last_change, last_direction, last_alert_time, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (symbol, now, price, change, direction, now if price else None, note))
+        conn.commit()
+        return True
+    except:
+        return False
+
+def remove_from_bookmarks(symbol: str) -> bool:
+    symbol = normalize_symbol(symbol)
+    cursor.execute("DELETE FROM bookmarks WHERE symbol=?", (symbol,))
+    cursor.execute("DELETE FROM bookmark_history WHERE symbol=?", (symbol,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+def record_bookmark_history(symbol, price, change_pct, direction, volume=0):
+    symbol = normalize_symbol(symbol)
+    now = int(time.time())
+    cursor.execute("""
+        INSERT INTO bookmark_history (symbol, alert_time, price, change_pct, direction, volume)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (symbol, now, price, change_pct, direction, volume))
+    # Keep only last 10 entries per symbol
+    cursor.execute("""
+        DELETE FROM bookmark_history
+        WHERE symbol = ? AND id NOT IN (
+            SELECT id FROM bookmark_history
+            WHERE symbol = ?
+            ORDER BY alert_time DESC LIMIT 10
+        )
+    """, (symbol, symbol))
+    conn.commit()
+
+def get_bookmark_history(symbol, limit=5):
+    symbol = normalize_symbol(symbol)
+    cursor.execute("""
+        SELECT alert_time, price, change_pct, direction, volume
+        FROM bookmark_history
+        WHERE symbol = ?
+        ORDER BY alert_time DESC
+        LIMIT ?
+    """, (symbol, limit))
+    return cursor.fetchall()
+
+def check_multi_day_confirmation(symbol, current_direction):
+    """
+    Check last few history entries for multi-day same-direction moves.
+    Returns (confirmed: bool, summary: str, suggestion: str)
+    """
+    history = get_bookmark_history(symbol, limit=5)
+    if len(history) < 2:
+        return False, "", ""
+
+    # history is newest first
+    same_dir_count = 0
+    days_seen = set()
+    summary_lines = []
+
+    for entry in history:
+        alert_time, price, change_pct, direction, volume = entry
+        day = time.strftime("%A", time.localtime(alert_time))
+        if direction == current_direction:
+            same_dir_count += 1
+            days_seen.add(day)
+            if symbol in CURRENCIES:
+                summary_lines.append(f"{day}\nPair: {symbol}\nRate: {price:.4f}\nChange: {change_pct:+.2f}%")
+            else:
+                vol_str = f"\nVolume: {int(volume):,}" if volume else ""
+                summary_lines.append(f"{day}\nSymbol: {symbol}\nPrice: ${price:.2f}\nChange: {change_pct:+.2f}%{vol_str}")
+        else:
+            break  # stop at first opposite direction
+
+    if same_dir_count >= 2 and len(days_seen) >= 2:
+        if current_direction == "spike":
+            suggestion = "➡️ Multi-day SPIKE confirmation → consider LONG"
+        else:
+            suggestion = "➡️ Multi-day DROP confirmation → consider SHORT"
+        summary = "\n\n".join(reversed(summary_lines))  # oldest first
+        return True, summary, suggestion
+
+    return False, "", ""
+
+# =========================
 # TELEGRAM
 # =========================
 
@@ -194,6 +323,20 @@ def build_watchlist_keyboard(symbols: list):
         keyboard = [[{"text": "Watchlist is empty", "callback_data": "noop"}]]
     return {"inline_keyboard": keyboard}
 
+def build_bookmarks_keyboard(rows: list):
+    """Inline keyboard with Unbookmark buttons"""
+    keyboard = []
+    row = []
+    for i, r in enumerate(rows):
+        sym = r[0]
+        row.append({"text": f"❌ {sym}", "callback_data": f"unbookmark:{sym}"})
+        if len(row) == 2 or i == len(rows) - 1:
+            keyboard.append(row)
+            row = []
+    if not rows:
+        keyboard = [[{"text": "Bookmarks empty", "callback_data": "noop"}]]
+    return {"inline_keyboard": keyboard}
+
 # =========================
 # TELEGRAM COMMAND HANDLER (background thread)
 # =========================
@@ -222,6 +365,31 @@ def process_update(update):
                     answer_callback(cq_id, f"Added {symbol} ⭐")
                 else:
                     answer_callback(cq_id, "Already on watchlist")
+            elif data_str.startswith("unbookmark:"):
+                symbol = data_str.split(":", 1)[1]
+                if remove_from_bookmarks(symbol):
+                    answer_callback(cq_id, f"Removed bookmark {symbol}")
+                    bms = get_bookmarks()
+                    if not bms:
+                        send_telegram("📌 Bookmarks is empty.", chat_ids=[chat_id])
+                    else:
+                        lines = []
+                        for r in bms:
+                            sym, price, change, direction, ts, note = r
+                            extra = ""
+                            if price is not None:
+                                extra = f" | last {change:+.2f}% @ {price}"
+                            lines.append(f"• {sym}{extra}")
+                        text = "📌 <b>Your Bookmarks</b>\n\n" + "\n".join(lines)
+                        send_telegram(text, reply_markup=build_bookmarks_keyboard(bms), chat_ids=[chat_id])
+                else:
+                    answer_callback(cq_id, "Not found")
+            elif data_str.startswith("bookmark:"):
+                symbol = data_str.split(":", 1)[1]
+                if add_to_bookmarks(symbol):
+                    answer_callback(cq_id, f"Bookmarked {symbol} 📌")
+                else:
+                    answer_callback(cq_id, "Already bookmarked")
             else:
                 answer_callback(cq_id)
             return
@@ -250,8 +418,13 @@ def process_update(update):
                 "/watch SYMBOL – Add to watchlist (priority alerts)\n"
                 "/unwatch SYMBOL – Remove from watchlist\n"
                 "/watchlist – Show current watchlist\n"
+                "/bookmark SYMBOL – Bookmark for multi-day tracking\n"
+                "/unbookmark SYMBOL – Remove bookmark\n"
+                "/bookmarks – Show bookmarks + history\n"
                 "/help – This message\n\n"
-                "Watchlist symbols are scanned first and use tighter thresholds."
+                "⭐ Watchlist = faster + tighter thresholds\n"
+                "📌 Bookmark = multi-day confirmation tracking\n"
+                "   (consecutive same-direction moves → LONG/SHORT suggestion)"
             )
             send_telegram(help_text, chat_ids=[chat_id])
 
@@ -282,6 +455,54 @@ def process_update(update):
             else:
                 text = "⭐ <b>Your Watchlist</b>\n\n" + "\n".join(f"• {s}" for s in wl)
                 send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
+
+        elif cmd == "/bookmark":
+            if not arg:
+                send_telegram("Usage: /bookmark GBP/JPY  or  /bookmark SUN", chat_ids=[chat_id])
+                return
+            symbol = normalize_symbol(arg)
+            if add_to_bookmarks(symbol):
+                send_telegram(
+                    f"📌 Bookmarked <b>{symbol}</b>\n\n"
+                    f"Bot will now track multi-day same-direction moves.\n"
+                    f"When confirmed → you get a LONG / SHORT suggestion.",
+                    chat_ids=[chat_id]
+                )
+            else:
+                send_telegram(f"{symbol} is already bookmarked.", chat_ids=[chat_id])
+
+        elif cmd == "/unbookmark":
+            if not arg:
+                send_telegram("Usage: /unbookmark GBP/JPY", chat_ids=[chat_id])
+                return
+            symbol = normalize_symbol(arg)
+            if remove_from_bookmarks(symbol):
+                send_telegram(f"🗑 Removed bookmark <b>{symbol}</b>", chat_ids=[chat_id])
+            else:
+                send_telegram(f"{symbol} was not bookmarked.", chat_ids=[chat_id])
+
+        elif cmd == "/bookmarks":
+            bms = get_bookmarks()
+            if not bms:
+                send_telegram("📌 Bookmarks is empty.\nUse /bookmark SYMBOL to start multi-day tracking.", chat_ids=[chat_id])
+            else:
+                lines = []
+                for r in bms:
+                    sym, price, change, direction, ts, note = r
+                    extra = ""
+                    if price is not None and change is not None:
+                        extra = f"\n  last: {change:+.2f}% @ {price}"
+                        if direction:
+                            extra += f" ({direction})"
+                    hist = get_bookmark_history(sym, limit=3)
+                    if hist:
+                        extra += "\n  history:"
+                        for h in reversed(hist):
+                            day = time.strftime("%a", time.localtime(h[0]))
+                            extra += f"\n    {day}: {h[2]:+.2f}%"
+                    lines.append(f"• <b>{sym}</b>{extra}")
+                text = "📌 <b>Your Bookmarks</b> (multi-day tracking)\n\n" + "\n\n".join(lines)
+                send_telegram(text, reply_markup=build_bookmarks_keyboard(bms), chat_ids=[chat_id])
 
     except Exception as e:
         print("Error processing update:", e)
@@ -544,6 +765,7 @@ def process_symbol(symbol, price):
 
     now = int(time.time())
     watched = is_watched(symbol)
+    bookmarked = is_bookmarked(symbol)
 
     cursor.execute(
         "SELECT alerted, baseline_price, baseline_volume, last_alert FROM assets WHERE symbol=?",
@@ -584,6 +806,9 @@ def process_symbol(symbol, price):
         drop_th  = PRICE_DROP_PERCENT  if symbol not in CURRENCIES else FOREX_DROP
         prefix = ""
 
+    direction = None
+    volume = 0
+
     if symbol in COMMODITIES:
         if symbol == "XAU":
             chart = "https://www.investing.com/commodities/gold"
@@ -593,6 +818,7 @@ def process_symbol(symbol, price):
             chart = "https://www.investing.com/commodities/crude-oil"
 
         if price_growth >= spike_th:
+            direction = "spike"
             message = (
                 f"{prefix}⛏️ COMMODITY SPIKE ALERT\n\n"
                 f"Asset: {symbol}\n"
@@ -602,6 +828,7 @@ def process_symbol(symbol, price):
                 f"Chart: {chart}"
             )
         elif price_growth <= drop_th:
+            direction = "drop"
             message = (
                 f"{prefix}⚠️ COMMODITY DROP ALERT\n\n"
                 f"Asset: {symbol}\n"
@@ -612,12 +839,12 @@ def process_symbol(symbol, price):
             )
         else:
             return
-        volume = 0
 
     elif symbol in CURRENCIES:
         chart = f"https://www.tradingview.com/symbols/{symbol.replace('/', '')}/"
 
         if price_growth >= spike_th:
+            direction = "spike"
             message = (
                 f"{prefix}💱 CURRENCY SPIKE ALERT\n\n"
                 f"Pair: {symbol}\n"
@@ -627,6 +854,7 @@ def process_symbol(symbol, price):
                 f"Chart: {chart}"
             )
         elif price_growth <= drop_th:
+            direction = "drop"
             message = (
                 f"{prefix}⚠️ CURRENCY DROP ALERT\n\n"
                 f"Pair: {symbol}\n"
@@ -637,7 +865,6 @@ def process_symbol(symbol, price):
             )
         else:
             return
-        volume = 0
 
     else:  # Stocks
         if price_growth < spike_th and price_growth > drop_th:
@@ -653,6 +880,7 @@ def process_symbol(symbol, price):
             return
 
         if price_growth >= spike_th:
+            direction = "spike"
             message = (
                 f"{prefix}📈 STOCK SPIKE ALERT\n\n"
                 f"Symbol: {symbol}\n"
@@ -663,6 +891,7 @@ def process_symbol(symbol, price):
                 f"Chart: {chart}"
             )
         else:
+            direction = "drop"
             message = (
                 f"{prefix}📉 STOCK DROP ALERT\n\n"
                 f"Symbol: {symbol}\n"
@@ -673,15 +902,18 @@ def process_symbol(symbol, price):
                 f"Chart: {chart}"
             )
 
-    # Add quick "Add to watchlist" button if not already watched
-    reply_markup = None
+    # Build buttons
+    buttons = []
     if not watched:
-        reply_markup = {
-            "inline_keyboard": [[
-                {"text": f"⭐ Watch {symbol}", "callback_data": f"watch:{symbol}"}
-            ]]
-        }
+        buttons.append({"text": f"⭐ Watch {symbol}", "callback_data": f"watch:{symbol}"})
+    if not bookmarked:
+        buttons.append({"text": f"📌 Bookmark {symbol}", "callback_data": f"bookmark:{symbol}"})
 
+    reply_markup = None
+    if buttons:
+        reply_markup = {"inline_keyboard": [buttons]}
+
+    # Update assets
     cursor.execute(
         "UPDATE assets SET alerted=1, baseline_price=?, baseline_volume=?, last_alert=? WHERE symbol=?",
         (price, volume, now, symbol)
@@ -692,6 +924,26 @@ def process_symbol(symbol, price):
     save_alerts_state()
 
     send_telegram(message, reply_markup=reply_markup)
+
+    # ===== BOOKMARK multi-day logic =====
+    if bookmarked and direction:
+        # Update bookmark record
+        add_to_bookmarks(symbol, price=price, change=price_growth, direction=direction)
+
+        # Record in history
+        record_bookmark_history(symbol, price, price_growth, direction, volume)
+
+        # Check for multi-day confirmation
+        confirmed, summary, suggestion = check_multi_day_confirmation(symbol, direction)
+
+        if confirmed:
+            confirm_msg = (
+                f"📌 <b>MULTI-DAY CONFIRMATION</b>\n\n"
+                f"{summary}\n\n"
+                f"{suggestion}\n\n"
+                f"Chart: {chart}"
+            )
+            send_telegram(confirm_msg)
 
 # =========================
 # SCAN FUNCTIONS (watchlist first)
@@ -741,7 +993,7 @@ def scan_currencies():
 # =========================
 
 def main():
-    print("Starting Liquid Market Scanner + Watchlist")
+    print("Starting Liquid Market Scanner + Watchlist + Bookmarks")
     load_stock_list()
 
     # Start Telegram listener in background thread
@@ -749,13 +1001,9 @@ def main():
     t.start()
 
     wl = get_watchlist()
+    bms = get_bookmarks()
     send_telegram(
-        f"🚀 Market scanner started\n"
-        f"Stocks loaded: {len(STOCKS)}\n"
-        f"Commodities: {', '.join(COMMODITIES)}\n"
-        f"Currencies: {', '.join(CURRENCIES)}\n"
-        f"Watchlist: {len(wl)} symbols\n\n"
-        f"Use /watch SYMBOL to prioritize any asset 💎"
+        f"Scanner online — {len(STOCKS)} stocks | {len(wl)} watchlist | {len(bms)} bookmarks"
     )
 
     while True:
