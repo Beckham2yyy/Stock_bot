@@ -83,10 +83,13 @@ CREATE TABLE IF NOT EXISTS assets (
 )
 """)
 
+# Per-user watchlist
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS watchlist (
-    symbol TEXT PRIMARY KEY,
-    added_at INTEGER
+    user_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    added_at INTEGER,
+    PRIMARY KEY (user_id, symbol)
 )
 """)
 
@@ -137,39 +140,50 @@ def save_alerts_state():
         print("Failed to save alerts state:", e)
 
 # =========================
-# WATCHLIST HELPERS
+# WATCHLIST HELPERS (per-user)
 # =========================
 
 def normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
 
 def is_watched(symbol: str) -> bool:
-    cursor.execute("SELECT 1 FROM watchlist WHERE symbol=?", (normalize_symbol(symbol),))
+    """True if ANY user has this symbol on their personal watchlist (used for prioritization)"""
+    cursor.execute("SELECT 1 FROM watchlist WHERE symbol=? LIMIT 1", (normalize_symbol(symbol),))
     return cursor.fetchone() is not None
 
-def get_watchlist() -> list:
-    cursor.execute("SELECT symbol FROM watchlist ORDER BY added_at")
+def get_watchlist(user_id: int) -> list:
+    cursor.execute(
+        "SELECT symbol FROM watchlist WHERE user_id=? ORDER BY added_at",
+        (user_id,)
+    )
     return [row[0] for row in cursor.fetchall()]
 
-def add_to_watchlist(symbol: str) -> bool:
+def add_to_watchlist(user_id: int, symbol: str) -> bool:
     symbol = normalize_symbol(symbol)
     if not symbol:
         return False
     try:
         cursor.execute(
-            "INSERT OR IGNORE INTO watchlist (symbol, added_at) VALUES (?, ?)",
-            (symbol, int(time.time()))
+            "INSERT OR IGNORE INTO watchlist (user_id, symbol, added_at) VALUES (?, ?, ?)",
+            (user_id, symbol, int(time.time()))
         )
         conn.commit()
         return cursor.rowcount > 0
     except:
         return False
 
-def remove_from_watchlist(symbol: str) -> bool:
+def remove_from_watchlist(user_id: int, symbol: str) -> bool:
     symbol = normalize_symbol(symbol)
-    cursor.execute("DELETE FROM watchlist WHERE symbol=?", (symbol,))
+    cursor.execute(
+        "DELETE FROM watchlist WHERE user_id=? AND symbol=?",
+        (user_id, symbol)
+    )
     conn.commit()
     return cursor.rowcount > 0
+
+def get_total_watchlist_entries() -> int:
+    cursor.execute("SELECT COUNT(*) FROM watchlist")
+    return cursor.fetchone()[0]
 
 # =========================
 # BOOKMARK HELPERS
@@ -348,23 +362,24 @@ def process_update(update):
             cq = update["callback_query"]
             data_str = cq.get("data", "")
             chat_id = cq["message"]["chat"]["id"]
+            user_id = cq["from"]["id"]
             cq_id = cq["id"]
 
             if data_str.startswith("unwatch:"):
                 symbol = data_str.split(":", 1)[1]
-                if remove_from_watchlist(symbol):
+                if remove_from_watchlist(user_id, symbol):
                     answer_callback(cq_id, f"Removed {symbol}")
-                    wl = get_watchlist()
+                    wl = get_watchlist(user_id)
                     text = "⭐ <b>Your Watchlist</b>\n\n" + ("\n".join(f"• {s}" for s in wl) if wl else "Empty")
                     send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
                 else:
                     answer_callback(cq_id, "Not found")
             elif data_str.startswith("watch:"):
                 symbol = data_str.split(":", 1)[1]
-                if add_to_watchlist(symbol):
+                if add_to_watchlist(user_id, symbol):
                     answer_callback(cq_id, f"Added {symbol} ⭐")
                 else:
-                    answer_callback(cq_id, "Already on watchlist")
+                    answer_callback(cq_id, "Already on your watchlist")
             elif data_str.startswith("unbookmark:"):
                 symbol = data_str.split(":", 1)[1]
                 if remove_from_bookmarks(symbol):
@@ -401,6 +416,7 @@ def process_update(update):
 
         text = (message.get("text") or "").strip()
         chat_id = message["chat"]["id"]
+        user_id = message["from"]["id"]
 
         if not text.startswith("/"):
             return
@@ -409,20 +425,20 @@ def process_update(update):
         cmd = parts[0].lower().split("@")[0]
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        print(f"[Telegram] Received command: {cmd} {arg} from {chat_id}")
+        print(f"[Telegram] Received command: {cmd} {arg} from user {user_id} in chat {chat_id}")
 
         if cmd in ("/start", "/help"):
             help_text = (
                 "🤖 <b>Market Scanner Bot</b>\n\n"
                 "<b>Commands:</b>\n"
-                "/watch SYMBOL – Add to watchlist (priority alerts)\n"
-                "/unwatch SYMBOL – Remove from watchlist\n"
-                "/watchlist – Show current watchlist\n"
+                "/watch SYMBOL – Add to <b>your</b> watchlist (priority alerts)\n"
+                "/unwatch SYMBOL – Remove from your watchlist\n"
+                "/watchlist – Show your personal watchlist\n"
                 "/bookmark SYMBOL – Bookmark for multi-day tracking\n"
                 "/unbookmark SYMBOL – Remove bookmark\n"
                 "/bookmarks – Show bookmarks + history\n"
                 "/help – This message\n\n"
-                "⭐ Watchlist = faster + tighter thresholds\n"
+                "⭐ Watchlist is personal (each member has their own)\n"
                 "📌 Bookmark = multi-day confirmation tracking\n"
                 "   (consecutive same-direction moves → LONG/SHORT suggestion)"
             )
@@ -433,25 +449,25 @@ def process_update(update):
                 send_telegram("Usage: /watch AAPL  or  /watch EUR/USD", chat_ids=[chat_id])
                 return
             symbol = normalize_symbol(arg)
-            if add_to_watchlist(symbol):
-                send_telegram(f"✅ Added <b>{symbol}</b> to watchlist ⭐", chat_ids=[chat_id])
+            if add_to_watchlist(user_id, symbol):
+                send_telegram(f"✅ Added <b>{symbol}</b> to <b>your</b> watchlist ⭐", chat_ids=[chat_id])
             else:
-                send_telegram(f"{symbol} is already on the watchlist.", chat_ids=[chat_id])
+                send_telegram(f"{symbol} is already on your watchlist.", chat_ids=[chat_id])
 
         elif cmd == "/unwatch":
             if not arg:
                 send_telegram("Usage: /unwatch AAPL", chat_ids=[chat_id])
                 return
             symbol = normalize_symbol(arg)
-            if remove_from_watchlist(symbol):
-                send_telegram(f"🗑 Removed <b>{symbol}</b> from watchlist", chat_ids=[chat_id])
+            if remove_from_watchlist(user_id, symbol):
+                send_telegram(f"🗑 Removed <b>{symbol}</b> from your watchlist", chat_ids=[chat_id])
             else:
-                send_telegram(f"{symbol} was not on the watchlist.", chat_ids=[chat_id])
+                send_telegram(f"{symbol} was not on your watchlist.", chat_ids=[chat_id])
 
         elif cmd == "/watchlist":
-            wl = get_watchlist()
+            wl = get_watchlist(user_id)
             if not wl:
-                send_telegram("⭐ Watchlist is empty.\nUse /watch SYMBOL to add one.", chat_ids=[chat_id])
+                send_telegram("⭐ Your watchlist is empty.\nUse /watch SYMBOL to add one.", chat_ids=[chat_id])
             else:
                 text = "⭐ <b>Your Watchlist</b>\n\n" + "\n".join(f"• {s}" for s in wl)
                 send_telegram(text, reply_markup=build_watchlist_keyboard(wl), chat_ids=[chat_id])
@@ -951,8 +967,12 @@ def process_symbol(symbol, price):
 
 def scan_stocks():
     print("Scanning liquid stocks...")
-    watched = set(get_watchlist())
-    # Prioritize: watched stocks first
+    # Prioritize symbols that ANY user has on their personal watchlist
+    watched = set()
+    cursor.execute("SELECT DISTINCT symbol FROM watchlist")
+    for row in cursor.fetchall():
+        watched.add(row[0])
+
     ordered = [s for s in STOCKS if s in watched] + [s for s in STOCKS if s not in watched]
 
     for i in range(0, len(ordered), BATCH_SIZE):
@@ -966,7 +986,11 @@ def scan_stocks():
 
 def scan_commodities():
     print("Scanning commodities...")
-    watched = set(get_watchlist())
+    watched = set()
+    cursor.execute("SELECT DISTINCT symbol FROM watchlist")
+    for row in cursor.fetchall():
+        watched.add(row[0])
+
     ordered = [s for s in COMMODITIES if s in watched] + [s for s in COMMODITIES if s not in watched]
 
     for i in range(0, len(ordered), BATCH_SIZE):
@@ -978,7 +1002,11 @@ def scan_commodities():
 
 def scan_currencies():
     print("Scanning currencies...")
-    watched = set(get_watchlist())
+    watched = set()
+    cursor.execute("SELECT DISTINCT symbol FROM watchlist")
+    for row in cursor.fetchall():
+        watched.add(row[0])
+
     ordered = [s for s in CURRENCIES if s in watched] + [s for s in CURRENCIES if s not in watched]
 
     for i in range(0, len(ordered), BATCH_SIZE):
@@ -1000,10 +1028,10 @@ def main():
     t = threading.Thread(target=telegram_polling_loop, daemon=True)
     t.start()
 
-    wl = get_watchlist()
+    total_wl = get_total_watchlist_entries()
     bms = get_bookmarks()
     send_telegram(
-        f"Scanner online — {len(STOCKS)} stocks | {len(wl)} watchlist | {len(bms)} bookmarks"
+        f"Scanner online — {len(STOCKS)} stocks | {total_wl} watchlist entries | {len(bms)} bookmarks"
     )
 
     while True:
